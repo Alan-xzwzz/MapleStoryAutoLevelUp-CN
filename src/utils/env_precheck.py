@@ -16,9 +16,14 @@
 【为什么不在缺少确定信息时猜】
     这里只做"能确定的检查"：
       · 客户区尺寸 —— 能直接量出来，必查；
-      · 是否最大化 —— 能量，必查（最大化后客户区通常不是 1366x768）；
       · 系统缩放比例 —— 能量，但**只在客户区尺寸不对时**才一并报出来，
         因为它多半是那个"为什么尺寸会不对"的答案。
+
+    ⚠️ 曾经这里还查过"是否最大化"，2026-09-27 删掉了：
+       实测该游戏窗口的风格位里 **WS_MAXIMIZEBOX = False**（getWindowLong
+       拿到 0x14CA0000，缺 0x10000），最大化按钮是灰的、点不了 ——
+       那段判断永远不会命中，是死代码。全屏则由"尺寸对不上"自然兜住
+       （全屏 = 使用显示器物理分辨率，与 1366x768 一致的概率极低）。
 
 设计原则（与项目里 issue #2 的收尾一致）：
     预检**绝不静默失败**，也**绝不只说"错了"** —— 每条报错都要带
@@ -76,17 +81,6 @@ def _system_scaling_percent():
     except Exception:
         return None
     return None
-
-
-def _is_maximized(hwnd):
-    """窗口是否处于最大化状态；判不了返回 None。"""
-    try:
-        import win32gui
-        import win32con
-        place = win32gui.GetWindowPlacement(hwnd)
-        return place[1] == win32con.SW_SHOWMAXIMIZED
-    except Exception:
-        return None
 
 
 def check_bars_environment(cfg, window_title=None):
@@ -153,7 +147,8 @@ def check_bars_environment(cfg, window_title=None):
             "",
             "请按顺序检查这三条（三条都要满足）：",
             f"　① 游戏里把分辨率设成 {want_w} x {want_h}，并且用「窗口化」运行"
-            f"（全屏、最大化都不行）",
+            f"（这个游戏的最大化按钮是灰的、点不了；全屏就更不行 —— "
+            f"全屏会直接使用你显示器的分辨率）",
             f"　② Windows 的「显示设置 → 缩放」设成 100%",
             f"　③ 如果你有两个屏幕、且两个屏幕的缩放不一样，"
             f"把游戏窗口拖到主屏幕上再试",
@@ -165,19 +160,12 @@ def check_bars_environment(cfg, window_title=None):
                 f"（顺带量到：你现在的系统缩放是 {scale}%，"
                 f"这多半就是画面尺寸对不上的原因 —— 把它调回 100% 试试。）",
             ]
-        if _is_maximized(hwnd) is True:
-            lines += [
-                "",
-                "（另外：游戏窗口现在是**最大化**状态。"
-                "请把它还原成普通窗口，再手动拖成 "
-                f"{want_w}x{want_h} 的画面区域。）",
-            ]
         lines += ["", README_HINT]
         return (False, "游戏画面大小不对", "\n".join(lines))
 
-    # ── 4. 尺寸对了，但最大化/缩放仍可能让坐标整体偏移 ──────────────
-    # 最大化时客户区恰好等于 1366x768 的概率极低，但**真出现**时，
-    # 坐标系仍是对的（裁出来就是 1366x768）—— 所以这里只提醒、不拦。
+    # ── 4. 尺寸对了，但系统缩放不是 100% ──────────────────────────
+    # 这次尺寸刚好对得上，说明用户是把窗口拖成了这个大小，
+    # 但缩放不是 100% 时，下次重开游戏/重新拖窗口很容易又偏 —— 提醒但不拦。
     extra = []
     scale = _system_scaling_percent()
     if scale is not None and scale != 100:

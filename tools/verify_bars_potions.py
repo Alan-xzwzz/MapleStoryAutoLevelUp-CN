@@ -219,19 +219,28 @@ def main():
     except Exception as e:                                       # noqa: BLE001
         check("config_default.yaml 的 bars/potion 段齐备（含 span）", False, str(e))
 
-    # ── 【13】出厂 roi/span 必须与 1366x768 实测值一致 ────────────────
-    # 满值宽 165px 是实测数；roi 宽与 span 宽必须都等于它，
-    # 否则满血读数就不是 100%（正是本次修的那个坑）。
+    # ── 【13】出厂 roi 必须与 1366x768 真机实测值一致 ──────────────────
+    # ⚠️★ 2026-09-27 真机实测订正：血条与蓝条是**并排两条**（左红右蓝），
+    #    不是上下叠放 —— 原来照着交接文档把两条 roi 写成同一个，
+    #    真机上蓝条 ROI 里装的其实是血条，蓝色一个像素都搜不到。
+    #    现在两条 roi 必须**不同**（各在自己那条上），且宽度都 = 165。
     try:
         cfg_yaml = load_yaml("config/config_default.yaml")
-        hp_cfg = BarsDetector.from_dict(cfg_yaml["bars"]).hp.config
-        x1, y1, x2, y2 = hp_cfg.roi
-        roi_w = x2 - x1
-        ok13 = (roi_w == 165) and (hp_cfg.span.width == 165)
-        check("出厂 roi 宽 = span 宽 = 实测满值宽 165px", ok13,
-              f"roi宽={roi_w} span宽={hp_cfg.span.width}")
+        bars = BarsDetector.from_dict(cfg_yaml["bars"])
+        hp_roi = bars.hp.config.roi
+        mp_roi = bars.mp.config.roi
+        hp_w = hp_roi[2] - hp_roi[0]
+        mp_w = mp_roi[2] - mp_roi[0]
+        # 两条都是 165 宽；且左右位置不同（蓝条在血条右边）
+        ok13 = (hp_w == 165 and mp_w == 165
+                and bars.hp.config.span.width == 165
+                and bars.mp.config.span.width == 165
+                and mp_roi[0] > hp_roi[0])          # ★ 蓝条必须在血条右边
+        check("出厂 roi：两条各 165 宽、span 齐备、蓝条在血条右侧", ok13,
+              f"hp宽={hp_w}@{hp_roi[0]} mp宽={mp_w}@{mp_roi[0]} "
+              f"span={bars.hp.config.span.width}/{bars.mp.config.span.width}")
     except Exception as e:                                       # noqa: BLE001
-        check("出厂 roi 宽 = span 宽 = 实测满值宽 165px", False, str(e))
+        check("出厂 roi：两条各 165 宽、span 齐备、蓝条在血条右侧", False, str(e))
 
     # ── 【14】环境预检：能给出人话结论（不断言具体 ok，因 CI 无游戏窗口）──
     # 只要求"能跑通并返回三元组"，且**不匹配时必须带怎么改**。
