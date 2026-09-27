@@ -194,7 +194,14 @@ python -m src.engine.MapleStoryAutoLevelUp --record          # 录制调试视�
 # 1) 打完整包（照常）
 python -m tools.make_release_zip "dist/冒险岛自动练级" "MapleStoryAutoLevelUp-CN-vX.Y.Z.zip"
 
-# 2) 生成增量补丁（只含变化的文件，实测约 6MB）
+# 2) ★ 发布前体检：用户环境 vs 我的环境（务必先跑）
+#    查「运行时要用的库 / 出厂资源 / 界面自调用的子工具」在产物里是否齐全、
+#    有没有混进开发用工具、出厂配置里有没有我的机器痕迹、
+#    需要用户额外准备的东西（驱动/管理员/窗口模式）文档里说没说。
+#    这类差异在开发机上**永远不会复现**（项目已因此连踩三次，见脚本文件头）。
+python -m tools.verify_user_env_gap
+
+# 3) 生成增量补丁（只含变化的文件，实测约 6MB）
 #    ★ 用 --universal：一份覆盖**所有**比 --to 旧的版本，
 #      不必为 v1.0 / v1.0.1 / v1.0.2 各发一份（那只会让用户困惑）。
 #      原理：业务代码（600+ 模块）全内嵌在 exe 里，补丁整包替换 exe，
@@ -202,7 +209,7 @@ python -m tools.make_release_zip "dist/冒险岛自动练级" "MapleStoryAutoLev
 python -m tools.make_patch --to v1.0.3 --universal \
     --dist "dist/冒险岛自动练级" --out "patch-to-vX.Y.Z-universal.zip"
 
-# 3) 两个附件一起传
+# 4) 两个附件一起传
 gh release upload vX.Y.Z MapleStoryAutoLevelUp-CN-vX.Y.Z.zip patch-to-vX.Y.Z-universal.zip
 ```
 
