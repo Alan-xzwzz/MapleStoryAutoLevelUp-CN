@@ -256,15 +256,23 @@ def main():
     except Exception as e:                                       # noqa: BLE001
         check("环境预检返回 (ok, 标题, 说明)，且拦下时带『怎么改』", False, str(e))
 
-    # ── 【15】预检失败时引擎必须**降级不崩**（挂机照常，只是不喝药）────
-    # 用一份把 roi 改坏的配置，走真实装配入口，要求不抛异常且 bars_ok=False。
+    # ── 【15】血蓝配置非法时：装配必须**降级返回**，而不是把异常往外抛 ────
+    #
+    # ⚠️★ 2026-09-27 CI 修复（这一项原来挂在 CI 上，本地却是绿的）：
+    #    原写法先 `MapleStoryAutoBot(args)` 造引擎、再调 `_setup_bars_and_potions`。
+    #    问题在于**造引擎会连带读一堆"用户数据"文件**，其中
+    #    `config/config_data.yaml`（地图登记表）**不在仓库里** —— 它是用户
+    #    录路线时才生成的，被 .gitignore 挡住（.gitignore:36）。
+    #    ⇒ CI 是全新检出，那个文件不存在 → 抛 FileNotFoundError →
+    #      用例红。而开发机上本地有这个文件，所以一直是绿的。
+    #       这是典型的"只有开发机能过"的用例，**测的根本不是被测逻辑**。
+    #
+    #    修法：不再经引擎构造函数，直接测 `_setup_bars_and_potions` 本身 ——
+    #    它是个**只读 cfg 的方法**，用 __new__ 拿个空壳实例就够，
+    #    既测到了真实入口，又不牵连任何用户数据文件。
     try:
-        from types import SimpleNamespace
         from src.engine.MapleStoryAutoLevelUp import MapleStoryAutoBot
-        args = SimpleNamespace(disable_control=True, cfg="default", debug=False,
-                               record=False, is_ui=True, disable_viz=True,
-                               test_image="", init_state="")
-        bot = MapleStoryAutoBot(args)
+        bot = MapleStoryAutoBot.__new__(MapleStoryAutoBot)   # 不走 __init__，避免读用户数据
         bad = load_yaml("config/config_default.yaml")
         bad["bars"]["hp"]["roi"] = [0, 0, 5, 5]
         bad["bars"]["hp"]["span"] = [0, 999]      # 明显越界
@@ -274,6 +282,33 @@ def main():
               f"detector={bot.bars_detector} bars_ok={bot.bars_ok}")
     except Exception as e:                                       # noqa: BLE001
         check("血蓝配置非法时：装配不抛异常、功能降级关闭", False, f"抛了异常: {e}")
+
+    # ── 【16】★用例自身的环境无关性（防"只有开发机能过"复发）──────────
+    # 这一项是给上面那条兜底的：把【15】曾经踩的坑钉成用例 ——
+    # 本自检文件**不得依赖任何被 .gitignore 挡住的用户数据文件**。
+    # 判据很直接：仓库里**有**的配置模板必须存在；用户数据的那些必须不被依赖。
+    try:
+        tracked = ["config/config_default.yaml",
+                   "config/config_custom.yaml",
+                   "config/config_data.blank.yaml"]
+        missing = [p for p in tracked if not os.path.exists(p)]
+        # 反向检查：本文件源码里不能出现对用户数据文件的直接读取
+        src = open(os.path.abspath(__file__), encoding="utf-8").read()
+        # 只看**代码**行（去掉注释与字符串里的说明），避免把说明文字误判
+        code_lines = []
+        for ln in src.splitlines():
+            s = ln.strip()
+            if s.startswith("#"):
+                continue
+            code_lines.append(ln)
+        code = "\n".join(code_lines)
+        bad_refs = [p for p in ("config/config_data.yaml", "config_custom.yaml")
+                    if f'load_yaml("{p}")' in code or f"load_yaml('{p}')" in code]
+        check("本自检不依赖用户数据文件（CI 全新检出也能跑）",
+              (not missing) and (not bad_refs),
+              f"缺模板={missing} 违规引用={bad_refs}")
+    except Exception as e:                                       # noqa: BLE001
+        check("本自检不依赖用户数据文件（CI 全新检出也能跑）", False, str(e))
 
     print()
     if FAIL:
