@@ -105,16 +105,23 @@ python -m src.engine.MapleStoryAutoLevelUp --record          # 录制调试视�
 python -m tools.make_release_zip "dist/冒险岛自动练级" "MapleStoryAutoLevelUp-CN-vX.Y.Z.zip"
 
 # 2) 生成增量补丁（只含变化的文件，实测约 6MB）
-python -m tools.make_patch --from v1.0.2 --to v1.0.3 \
-    --dist "dist/冒险岛自动练级" --out "patch-v1.0.2-to-v1.0.3.zip"
+#    ★ 用 --universal：一份覆盖**所有**比 --to 旧的版本，
+#      不必为 v1.0 / v1.0.1 / v1.0.2 各发一份（那只会让用户困惑）。
+#      原理：业务代码（600+ 模块）全内嵌在 exe 里，补丁整包替换 exe，
+#      所以不论从哪个旧版本出发，需要的东西完全一样。
+python -m tools.make_patch --to v1.0.3 --universal \
+    --dist "dist/冒险岛自动练级" --out "patch-to-vX.Y.Z-universal.zip"
 
 # 3) 两个附件一起传
-gh release upload vX.Y.Z MapleStoryAutoLevelUp-CN-vX.Y.Z.zip patch-v1.0.2-to-vX.Y.Z.zip
+gh release upload vX.Y.Z MapleStoryAutoLevelUp-CN-vX.Y.Z.zip patch-to-vX.Y.Z-universal.zip
 ```
 
-补丁 zip 里含 `patch.json`（版本与校验和）和 `应用补丁.bat`（老用户双击即完成覆盖，会先把被覆盖的文件备份到 `_backup_补丁前`）。
+补丁 zip 里含 `patch.json`（版本、适用版本清单、sha256）和 `应用补丁.bat`（老用户双击即完成覆盖，会先把被覆盖的文件备份到 `_backup_补丁前`）。
 
-**`make_patch` 会在依赖有变化时拒绝生成补丁** —— 那时用户 `_internal/` 里的库对不上，必须走完整包。这是硬门槛，不要绕过。
+**两条硬约束（脚本会自检并拒绝违规的补丁）**：
+
+1. **依赖有变化时不许发补丁**（`requirements.txt` 等变过）—— 那时用户 `_internal/` 里的库对不上，必须走完整包。`--universal` 会逐个检查所有旧版本。
+2. **补丁文件必须放在 zip 的子目录 `_补丁文件/` 里**，不能与用户程序同级 —— 同级会导致「解压即覆盖」：用户还没双击 bat，程序就被改了，备份拿到的是新文件（还原无意义），且解压中断会留下半新半旧的损坏安装（2026-09-27 实测复现）。
 
 补丁**不会包含**用户自己的数据：`config/config_custom.yaml`、`config/config_data.yaml`、`log/`、`minimaps/`、`monster/`、`nametag/` 一律排除，覆盖升级不会毁掉配置和路线。
 
