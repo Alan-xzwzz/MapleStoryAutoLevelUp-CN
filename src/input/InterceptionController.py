@@ -47,12 +47,40 @@ def init_interception():
     return True
 
 
+# ── 按键失败的可观测性（2026-09-27 加）─────────────────────────────────────
+# 为什么需要：下面几个函数原来把异常一律记 `logger.debug`，而日志默认 INFO 级
+#   ⇒ **按键送不出去时，日志里一条线索都没有**。
+#   用户侧症状正是「引擎在发指令、角色纹丝不动」（issue #2 里 2026-09-27 那条：
+#   截图显示 `指令=left none none`、位置 10 秒没变、`附近怪=0`），
+#   而他能拿到的日志只有"卡住了"的提示，完全无法判断是权限、驱动还是别的问题。
+#
+# ⇒ 改成：**每类失败只大声报一次**（WARNING，带可能原因与怎么修），
+#   之后降级为 debug —— 既留下排查线索，又不会每帧刷屏。
+_KEY_FAIL_LOGGED: set = set()
+
+
+def _report_key_failure(api, key, err):
+    """按键调用失败时报告一次（同类只报一次，避免按 fps 刷屏）。"""
+    tag = f"{api}:{type(err).__name__}"
+    if tag in _KEY_FAIL_LOGGED:
+        logger.debug(f"[Interception {api}] 失败: {key} - {err}")
+        return
+    _KEY_FAIL_LOGGED.add(tag)
+    logger.warning(
+        f"[Interception {api}] 按键失败（本类错误只报这一次）: key={key} - {err}\n"
+        f"        ⚠️ 按键没能送进游戏 —— 角色会表现为「原地不动 / 一次都不打怪」。\n"
+        f"        最常见原因（按顺序查）：\n"
+        f"          ① 程序**没用管理员身份运行**（右键 exe → 以管理员身份运行）；\n"
+        f"          ② **Interception 内核驱动没装**（光装本程序不够，装完要重启电脑）；\n"
+        f"          ③ 游戏窗口不在前台（按键只会送到最前面的窗口）。")
+
+
 def key_down(key):
     """按下按键不释放"""
     try:
         interception.key_down(key.lower())
     except Exception as e:
-        logger.debug(f"[Interception key_down] 失败: {key} - {e}")
+        _report_key_failure("key_down", key, e)
 
 
 def key_up(key):
@@ -60,7 +88,7 @@ def key_up(key):
     try:
         interception.key_up(key.lower())
     except Exception as e:
-        logger.debug(f"[Interception key_up] 失败: {key} - {e}")
+        _report_key_failure("key_up", key, e)
 
 
 def press_key(key, duration=None):
@@ -79,7 +107,7 @@ def press_key(key, duration=None):
         time.sleep(duration)
         interception.key_up(key.lower())
     except Exception as e:
-        logger.debug(f"[Interception press_key] 失败: {key} - {e}")
+        _report_key_failure("press_key", key, e)
 
 
 # ---------------------------------------------------------------------------
