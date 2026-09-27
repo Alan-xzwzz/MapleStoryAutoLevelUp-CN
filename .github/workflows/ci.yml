@@ -68,7 +68,8 @@ jobs:
             'verify_make_patch',
             'verify_pack_manifest',
             'verify_key_failure_visible',
-            'verify_driver_precheck'
+            'verify_driver_precheck',
+            'verify_home_none_no_crash'
           )
           $failed = @()
           foreach ($t in $tests) {

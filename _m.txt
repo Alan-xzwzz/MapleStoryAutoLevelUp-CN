@@ -1,0 +1,36 @@
+﻿修复「没录回正线时每帧崩溃」（issue #2 用户新报）+ 补回正线说明
+
+【用户报的现象】（原样日志）
+    File "src/engine/MapleStoryAutoLevelUp.py", line 3414, in update_cmd_by_route
+    TypeError: 'NoneType' object is not subscriptable
+    [主循环] run_once 抛异常，挂机已停止推进。
+    用户补充：目前移动可以执行，不攻击
+
+【根因】
+  update_cmd_by_route 里那段「防地面伪灰」（2026-09-17 加）是**拿回正线
+  route_home.png 当参照**判断 up 像素是不是真管柱的：
+      self.img_route_home[_up_y-d, _up_x]
+  而 img_route_home 在**没录回正线时是 None**（见 __init__ 赋值），
+  于是直接取下标 → TypeError，且**每帧都抛** → 主循环停摆（用户说的"不攻击"）。
+
+【改动】
+1. src/engine/MapleStoryAutoLevelUp.py：把「有回正线」作为前置条件
+   （新增 _can_check_fake），没有就跳过这层伪灰检测 —— 退回不做检测的
+   老行为。宁可偶尔误判 up，也好过整条挂机流程崩掉。
+   有回正线时行为完全不变（原有防伪灰能力未被削弱）。
+2. tools/verify_home_none_no_crash.py（新增，已入 CI）：
+   **真的复现用户那一次崩溃**（实调 update_cmd_by_route，不是只看代码里
+   有没有 is not None）。要点：
+     · 先用 sys.settrace 探针确认用例**真的走到了**目标行 ——
+       只断言"没抛异常"是不够的，桩不全时函数可能提前 return，那样
+       即使代码没修也会"通过"（本用例第一版就这么假绿过，被探针抓出）；
+     · 桩数据要让 up 候选 distance 更近，才会进 else 分支（那段代码在 else 里）。
+   已验证：还原旧代码 → 完整复现 TypeError；新代码 → 无异常。
+3. README_用户版：★ 补「回正线」的用户侧说明 —— 此前 docs/ 下只有 4 份
+   给开发者看的 PRD/设计文档（160+ 处提及），用户版 0 处，用户根本不知道
+   要录回正线、也就不知道不录会掉坑里回不来。
+     · 第 2 步补「顺便说下回正线」：它管什么、强烈建议录、不录的后果、
+       怎么录、可手绘、多落点可叠加；
+     · 常见问题补「角色掉到平台下面站在坑里不动」一条（含日志关键词）。
+
+CI 现 12 项离线自检全绿。src/ 已改，需重新打包发版。

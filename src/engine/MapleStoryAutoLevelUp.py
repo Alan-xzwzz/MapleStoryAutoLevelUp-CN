@@ -3407,9 +3407,21 @@ class MapleStoryAutoBot:
                 # up 像素和角色**同 y**（站在地面层）且**同列往上 3px 内没有第二个 up 像素**
                 # → 它不是真管柱的起点（真管柱一定有连续 up 像素）。角色按 up 也爬不上去，
                 # 改成走 color_code（多半是"right"，让角色先走到管柱下方再爬）。
+                #
+                # ⚠️★ 2026-09-27 修崩溃（issue #2 用户日志实证）：
+                #    这层检测是**拿回正线当参照**判断的（真管柱在 route_home.png 上有连续像素），
+                #    而 `img_route_home` 在**没录回正线时是 None** —— 旧代码直接
+                #    `self.img_route_home[_up_y-d, _up_x]` 取下标 ⇒
+                #    `TypeError: 'NoneType' object is not subscriptable`，
+                #    **每帧抛一次、主循环停摆**（用户症状：「移动可以执行，不攻击」）。
+                #    ⇒ 把「有回正线」作为前置条件：没有它就没法做这层验证，
+                #      退回不做伪灰检测的老行为（直接按 up 走）——宁可偶尔误判，
+                #      也好过整条挂机流程崩掉。
                 _up_x = color_code_up_down["pixel"][0]
                 _up_y = color_code_up_down["pixel"][1]
-                _fake = (_up_y == self.loc_player_global[1]
+                _can_check_fake = self.img_route_home is not None
+                _fake = (_can_check_fake
+                         and _up_y == self.loc_player_global[1]
                          and (_up_y - 3 < 0
                               or not any(tuple(int(v) for v in self.img_route_home[_up_y-d, _up_x][:3])
                                           in {(127, 127, 127), (255, 255, 127)}
