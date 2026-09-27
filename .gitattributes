@@ -1,0 +1,35 @@
+# ── 换行符与编码纪律（2026-09-27 加）────────────────────────────────
+#
+# ★ 为什么要这个文件（踩过的坑，别删）：
+#   .bat 是 Windows 批处理脚本，cmd.exe 解析它时**按字节偏移**找行边界。
+#   如果 .bat 用纯 LF 换行，且文件里有**中文**（一个汉字 3 字节），
+#   偏移就会被算错 —— 表现为命令被从中间劈开：
+#       'rc' is not recognized ...          ← 本该是 set PY
+#       'LEBOT_PY' is not recognized ...    ← 同上
+#       'dden-import' is not recognized ... ← 本该是 --hidden-import
+#   实测（2026-09-27）：同样内容只把 LF 换成 CRLF，就能完整跑通。
+#
+#   本项目从初始提交（68118f7，v1.0.0）起，5 个 .bat **全是纯 LF**，
+#   一路带到现在；其中"停止界面.bat"后来被单独修成 CRLF，其余 4 个没有，
+#   于是"打包_用户版.bat"这类关键脚本实际是坏的（实测命令被腰斩）。
+#
+#   ⇒ 用 eol=crlf 把 .bat 的换行**钉死在仓库层面**：
+#     不管谁克隆、机器上 core.autocrlf 是什么设置，检出时都是 CRLF。
+#     只修工作区的文件而不加这一行，同样的坑还会再踩一次。
+#
+*.bat text eol=crlf
+
+# .cmd 同理（同一种批处理脚本，只是扩展名不同）
+*.cmd text eol=crlf
+
+# Python 源码统一用 LF（与 .bat 相反：Python 不关心换行，但统一了好 diff）
+*.py text eol=lf
+
+# 这些是二进制/生成物，绝不能做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.mp4 binary

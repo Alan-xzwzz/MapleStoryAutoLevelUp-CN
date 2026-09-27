@@ -1,16 +1,16 @@
 @echo off
-title Ã°ÏÕµº×Ô¶¯Á·¼¶ - Í£Ö¹½çÃæ
+title å†’é™©å²›è‡ªåŠ¨ç»ƒçº§ - åœæ­¢ç•Œé¢
 cd /d "%~dp0"
 
 echo.
-echo   ÕıÔÚ¹Ø±Õ×Ô¶¯Á·¼¶½çÃæ ...
+echo   æ­£åœ¨å…³é—­è‡ªåŠ¨ç»ƒçº§ç•Œé¢ ...
 echo.
 
-rem ÏÈÇë½çÃæ×Ô¼ºÕı³£ÍË³ö£¨ÕâÑù Qt ÄÜ¸É¾»Ïú»Ù´°¿Ú£¬²»»áÏñÖ±½ÓÇ¿É±ÄÇÑù
-rem ÔÚÆÁÄ»ÉÏÁôÒ»¸öµã²»¶¯µÄ²ĞÓ°´°¿Ú£©£»µÈÁ½Ãë»¹Ã»ÍË³öµÄ£¬ÔÙÇ¿ÖÆ½áÊø¶µµ×¡£
+rem å…ˆè¯·ç•Œé¢è‡ªå·±æ­£å¸¸é€€å‡ºï¼ˆè¿™æ · Qt èƒ½å¹²å‡€é”€æ¯çª—å£ï¼Œä¸ä¼šåƒç›´æ¥å¼ºæ€é‚£æ ·
+rem åœ¨å±å¹•ä¸Šç•™ä¸€ä¸ªç‚¹ä¸åŠ¨çš„æ®‹å½±çª—å£ï¼‰ï¼›ç­‰ä¸¤ç§’è¿˜æ²¡é€€å‡ºçš„ï¼Œå†å¼ºåˆ¶ç»“æŸå…œåº•ã€‚
 powershell -NoProfile -Command "$sel = {$_.Name -like 'python*' -and $_.CommandLine -match 'run_gui'}; $ps = Get-CimInstance Win32_Process | Where-Object $sel; foreach ($p in $ps) { $o = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue; if ($o) { $o.CloseMainWindow() | Out-Null } }; Start-Sleep -Seconds 2; Get-CimInstance Win32_Process | Where-Object $sel | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
-echo   [OK] ÒÑ¹Ø±Õ£¨±¾À´¾ÍÃ»¿ªµÄ»°£¬ÕâÀï²»»áÓĞÈÎºÎ±ä»¯£©¡£
+echo   [OK] å·²å…³é—­ï¼ˆæœ¬æ¥å°±æ²¡å¼€çš„è¯ï¼Œè¿™é‡Œä¸ä¼šæœ‰ä»»ä½•å˜åŒ–ï¼‰ã€‚
 echo.
 pause
 exit /b 0
