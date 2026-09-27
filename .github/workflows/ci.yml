@@ -24,6 +24,14 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+        with:
+          # ⚠️ 必须取全历史（含标签）。verify_make_patch 要用
+          # `git diff --name-only v1.0.2..v1.0.3` 判断两个版本间
+          # 依赖有没有变（依赖变了就不许发增量补丁）。
+          # checkout 的默认 fetch-depth=1 只取最新一个 commit，
+          # 标签都不在 → 那条自检会直接失败。
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: 安装 Python
         uses: actions/setup-python@v5
@@ -56,7 +64,8 @@ jobs:
             'verify_home_restore',
             'verify_jump_cooldown',
             'verify_mob_template_qa',
-            'verify_no_frame_reason'
+            'verify_no_frame_reason',
+            'verify_make_patch'
           )
           $failed = @()
           foreach ($t in $tests) {

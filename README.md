@@ -96,6 +96,29 @@ python -m src.engine.MapleStoryAutoLevelUp --record          # 录制调试视�
 
 产物是 `--onedir` 目录，**整个文件夹拷走才能用**（只拷 exe 会因为找不到资源目录而失败，原因见 `src/utils/paths.py`）。
 
+### 发版：完整包 + 增量补丁
+
+完整包约 **106MB**，但其中 250MB+ 是 Python 运行时与第三方库（`_internal/`），**我们自己的代码只有约 6MB**（内嵌在 exe 里）。所以小改动不该让用户重下整个包 —— 发版时**两个都传**：
+
+```bash
+# 1) 打完整包（照常）
+python -m tools.make_release_zip "dist/冒险岛自动练级" "MapleStoryAutoLevelUp-CN-vX.Y.Z.zip"
+
+# 2) 生成增量补丁（只含变化的文件，实测约 6MB）
+python -m tools.make_patch --from v1.0.2 --to v1.0.3 \
+    --dist "dist/冒险岛自动练级" --out "patch-v1.0.2-to-v1.0.3.zip"
+
+# 3) 两个附件一起传
+gh release upload vX.Y.Z MapleStoryAutoLevelUp-CN-vX.Y.Z.zip patch-v1.0.2-to-vX.Y.Z.zip
+```
+
+补丁 zip 里含 `patch.json`（版本与校验和）和 `应用补丁.bat`（老用户双击即完成覆盖，会先把被覆盖的文件备份到 `_backup_补丁前`）。
+
+**`make_patch` 会在依赖有变化时拒绝生成补丁** —— 那时用户 `_internal/` 里的库对不上，必须走完整包。这是硬门槛，不要绕过。
+
+补丁**不会包含**用户自己的数据：`config/config_custom.yaml`、`config/config_data.yaml`、`log/`、`minimaps/`、`monster/`、`nametag/` 一律排除，覆盖升级不会毁掉配置和路线。
+
+
 ## 配置体系
 
 - `config/config_default.yaml` —— 全部默认值与注释说明（**基准**，一般不改）
