@@ -42,7 +42,7 @@ echo.
 echo [1/4] 打包主程序（约 1~2 分钟）...
 "%PY%" -m PyInstaller --noconfirm --noconsole --onedir src\main.py -p . ^
   --icon=%~dp0media\icon.ico ^
-  --hidden-import=tools.routeRecorder --hidden-import=tools.calibrate_nametag --hidden-import=tools.template_capture --hidden-import=tools.diagnose --hidden-import=tools.mob_template_qa --hidden-import=tools.homeRouteDrawer ^
+  --hidden-import=tools.routeRecorder --hidden-import=tools.calibrate_nametag --hidden-import=tools.template_capture --hidden-import=tools.diagnose --hidden-import=tools.mob_template_qa --hidden-import=tools.homeRouteDrawer --hidden-import=tools.measure_window ^
   -n "%NAME%" --workpath build_dev --specpath build_dev --distpath dist
 if errorlevel 1 goto fail
 

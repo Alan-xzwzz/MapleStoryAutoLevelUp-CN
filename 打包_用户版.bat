@@ -12,6 +12,12 @@ rem    只放出厂默认配置，打包结果可以直接分发给别人。
 rem
 rem  依赖：PyInstaller（pip install pyinstaller）
 rem  产物：dist\冒险岛自动练级\   —— 整个文件夹拷走即可运行
+rem
+rem  ⚠️ --hidden-import 里列的是**打包版运行时要自调用**的子工具
+rem     （见 src/main.py 的 _run_tool：exe 不认 -m，走 `exe --tool tools.xxx`）。
+rem     漏一个，用户点对应按钮就会 "No module named ..." —— 而用户没有 Python，
+rem     敲不了命令行补救。measure_window 是「一键按当前窗口大小改配置」用的，
+rem     正是给没有 Python 的打包版用户兜底，**必须在列**。
 rem ============================================================
 
 set PY=
@@ -37,7 +43,7 @@ echo.
 echo [1/4] 打包主程序（约 1~2 分钟）...
 "%PY%" -m PyInstaller --noconfirm --noconsole --onedir src\main.py -p . ^
   --icon=%~dp0media\icon.ico ^
-  --hidden-import=tools.routeRecorder --hidden-import=tools.calibrate_nametag --hidden-import=tools.template_capture --hidden-import=tools.diagnose --hidden-import=tools.mob_template_qa --hidden-import=tools.homeRouteDrawer ^
+  --hidden-import=tools.routeRecorder --hidden-import=tools.calibrate_nametag --hidden-import=tools.template_capture --hidden-import=tools.diagnose --hidden-import=tools.mob_template_qa --hidden-import=tools.homeRouteDrawer --hidden-import=tools.measure_window ^
   -n "%NAME%" --workpath build_user --specpath build_user --distpath dist
 if errorlevel 1 goto fail
 

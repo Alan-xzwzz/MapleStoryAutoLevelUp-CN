@@ -65,7 +65,8 @@ jobs:
             'verify_jump_cooldown',
             'verify_mob_template_qa',
             'verify_no_frame_reason',
-            'verify_make_patch'
+            'verify_make_patch',
+            'verify_pack_manifest'
           )
           $failed = @()
           foreach ($t in $tests) {

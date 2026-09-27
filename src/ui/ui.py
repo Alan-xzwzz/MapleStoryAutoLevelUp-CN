@@ -1007,10 +1007,16 @@ class MainWindow(QMainWindow):
     def _require_admin_for_hotkey_tools(self):
         """录路线要接收游戏内按键 —— 非管理员会被 Windows 静默屏蔽（§8.5）。"""
         if not self._is_admin():
+            # ⚠️ 提示语必须按**打包方式**给不同说法（2026-09-27 修）：
+            #    免安装包里**没有** 启动界面.bat（打包产物只有 exe 和几个
+            #    资源目录），照着旧提示去找 bat 会找不到，用户就卡在这。
+            how = ("右键「冒险岛自动练级.exe」→ 以管理员身份运行"
+                   if IS_FROZEN else
+                   "右键「启动界面.bat」→ 以管理员身份运行")
             QMessageBox.warning(
                 self, "需要管理员权限",
                 "游戏客户端以管理员权限运行，普通权限程序收不到游戏里按的按键。\n\n"
-                "请先关闭本程序，右键「启动界面.bat」→ 以管理员身份运行后重试。")
+                f"请先关闭本程序，然后{how}，再重试。")
             return False
         return True
 
@@ -2524,6 +2530,75 @@ class MainWindow(QMainWindow):
 
         self._start_recorder(map_id, replace, append_home)
 
+    def _fix_window_size_to_actual(self):
+        """按**当前实际窗口尺寸**改写配置里的 game_window.size / title_bar_height。
+
+        【为什么要有这个按钮】（2026-09-27 加，issue #2 收尾）
+          窗口尺寸与配置对不上时录制器一帧都拿不到（见 _activate_game_or_abort
+          里的尺寸预检）。原来的提示只给了一条命令行：
+              python -m tools.measure_window --write-config
+          **这对打包版用户是无效的** —— 免安装包里没有 Python，也没有
+          tools/ 源码，他敲不了这条命令。等于把问题原样丢回给用户。
+
+        ⇒ 在界面里提供一键修好的入口，两种打包方式都能用：
+             · 源码运行：直接调 tools.measure_window 的逻辑；
+             · 打包版：走 exe 的 --tool 自调用（见 src/main.py 的 _run_tool），
+               不依赖外部 Python。
+
+        Returns:
+            True = 已成功改写；False = 没改成（已弹窗说明原因）
+        """
+        import subprocess
+
+        py = self._console_python()
+        try:
+            args = self._tool_argv('tools.measure_window', '--write-config')
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.warning(self, "改不了", f"没能准备测量工具：{e}")
+            return False
+
+        try:
+            # 捕获输出以便把结果转述给用户（这一步只是量窗口、写配置，很快）
+            r = subprocess.run([py, *args], capture_output=True, timeout=60)
+            out = (r.stdout or b"").decode("utf-8", "replace")
+            err = (r.stderr or b"").decode("utf-8", "replace")
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.warning(
+                self, "改配置失败",
+                f"运行测量工具时出错：{e}\n\n"
+                f"也可以手动改 config/config_default.yaml 里的 game_window.size：\n"
+                f"　　格式是 [高, 宽]（注意是**高在前**）。")
+            return False
+
+        if r.returncode != 0:
+            QMessageBox.warning(
+                self, "改配置失败",
+                "测量工具没能完成。\n\n"
+                f"它说：\n{err.strip() or out.strip() or '（没有任何输出）'}\n\n"
+                "常见原因：游戏没开，或「游戏窗口标题」设置不对。")
+            return False
+
+        # 重新读配置，让界面用上新的尺寸
+        try:
+            from src.utils.common import load_yaml, override_cfg
+            self.cfg = override_cfg(load_yaml("config/config_default.yaml"),
+                                    load_yaml(self.path_cfg_custom))
+        except Exception:                                        # noqa: BLE001
+            pass   # 读不回来也不影响已经写进磁盘的配置
+
+        # 从工具输出里挑出关键几行转述（别把整篇日志糊给用户）
+        keep = [ln for ln in out.splitlines()
+                if any(k in ln for k in ("客户区", "窗口标题", "已写入", "size",
+                                         "标题栏", "✓", "✗"))]
+        detail = "\n".join(keep[:8]) or out.strip()[:400]
+        QMessageBox.information(
+            self, "已按当前窗口大小改好配置",
+            "搞定，配置已经按你现在的游戏窗口大小改好了。\n\n"
+            "现在再按一次 F4 就能正常录制（如果游戏窗口之后又改了大小，"
+            "重新点一次这个按钮即可）。\n\n"
+            f"工具输出摘要：\n{detail}")
+        return True
+
     def _activate_game_or_abort(self):
         """启动录制器前，先把前台交给游戏窗口，并**等到确认真的切过去**。
 
@@ -2601,19 +2676,29 @@ class MainWindow(QMainWindow):
                 _cw, _ch = int(_cl[2] - _cl[0]), int(_cl[3] - _cl[1])
                 _th, _tw = int(_size[0]), int(_size[1])
                 if (_cw, _ch) != (_tw, _th):
-                    QMessageBox.warning(
-                        self, "游戏窗口尺寸不对",
+                    # ⚠️ 2026-09-27 收尾修：原来的提示只给了一条命令行
+                    #    `python -m tools.measure_window --write-config`，
+                    #    而**打包版用户没有 Python、也没有 tools/ 源码**，
+                    #    敲不了这条命令 —— 等于把问题原样丢回给用户。
+                    #    现在改成给「一键修好」的按钮（两种打包都能用）。
+                    box = QMessageBox(self)
+                    box.setIcon(QMessageBox.Warning)
+                    box.setWindowTitle("游戏窗口尺寸不对")
+                    box.setText(
                         f"游戏窗口的画面区域（不含最上面那条标题栏）现在的大小是\n"
                         f"　　{_cw} x {_ch}（宽 x 高）\n"
                         f"而配置里写的是 {_tw} x {_th}。\n\n"
                         f"录制器要按配置的尺寸去裁画面，对不上就一帧都拿不到 ——\n"
                         f"这就是它报「抓不到游戏画面」的真正原因。\n\n"
-                        f"两种改法，任选一种：\n"
-                        f"　① 把游戏窗口拖成 {_tw} x {_th}（不含标题栏），再按 F4；\n"
-                        f"　② 在项目目录运行下面这条命令，让它按你现在的窗口大小\n"
-                        f"　　 自动改配置（推荐，不用手动量）：\n"
-                        f"　　 python -m tools.measure_window --write-config\n\n"
-                        f"注意：这跟「前台」没关系，也不是双屏导致的，不用去查那些。")
+                        f"注意：这跟「前台」「双屏」都没关系，不用去查那些。")
+                    btn_fix = box.addButton("一键按当前窗口大小改配置（推荐）",
+                                            QMessageBox.AcceptRole)
+                    box.addButton("我自己把窗口调成上面那个尺寸", QMessageBox.RejectRole)
+                    box.exec_()
+                    if box.clickedButton() is btn_fix:
+                        # 就地修好，然后**继续**启动录制器（不必让用户再按一次 F4）
+                        if self._fix_window_size_to_actual():
+                            return self._activate_game_or_abort()
                     return False
         except Exception:
             pass   # 查不了就照旧流程走 —— 不因为这段新检查把路堵死
