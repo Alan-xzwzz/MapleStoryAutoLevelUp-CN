@@ -19,6 +19,9 @@ class AutoBotController(QObject):
     debug_image_signal = Signal(object)
     route_map_viz_signal = Signal(object)
 
+    #: 按键驱动不可用时（start_bot 返回 -2）的原因说明，供界面弹窗展示
+    driver_problem = ""
+
     def __init__(self):
         """
         Init
@@ -110,6 +113,30 @@ class AutoBotController(QObject):
             return -1 # Load fail
         if ret != 0:
             return -1 # Load fail
+
+        # ── 按键驱动前置检查（2026-09-27 加）────────────────────────────────
+        # 为什么必须在 start() **之前**：
+        #   Interception 是**内核驱动**，pip 装包不等于装好驱动 —— 还要单独
+        #   下载安装并重启电脑。缺它时按键一个都送不出去，而症状是
+        #   「点开始、角色一动不动」，用户在日志里只能看到一句英文
+        #   （interception driver was not found or is not installed）。
+        #   实测（issue #2）：用户下载的是免安装包，既不知道要装驱动，
+        #   也没有 Python 去 pip install，就这么卡住了。
+        # ⇒ 在这里拦下，把「装什么、怎么装、装完要重启」直接讲清楚。
+        try:
+            from src.input.InterceptionController import (
+                driver_status, how_to_install_driver)
+            ok, detail = driver_status()
+        except Exception:                                        # noqa: BLE001
+            ok, detail = True, ""      # 检查本身出错不拦路（宁可让引擎去报错）
+        if not ok:
+            self.driver_problem = detail
+            logger.error(
+                "[start_bot] 按键驱动不可用，已阻止启动 —— 否则会表现为"
+                "「角色一动不动」而看不出原因。\n"
+                f"        原因：{detail}\n"
+                + "\n".join("        " + ln for ln in how_to_install_driver().splitlines()))
+            return -2   # 与"配置加载失败(-1)"区分开，界面据此弹安装指引
 
         # Start the bot engine
         try:

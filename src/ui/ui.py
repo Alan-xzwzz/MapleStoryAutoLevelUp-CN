@@ -2290,6 +2290,21 @@ class MainWindow(QMainWindow):
                 self.button_start_pause.setText("⏸ 暂停 (F1)")
                 self.button_start_pause.setStyleSheet("background-color: lightgreen;")
                 self.set_gbox_enabled(False)
+            elif ret == -2:
+                # 按键驱动不可用（2026-09-27 加）——
+                # 不弹这个窗的话，用户看到的就是「点开始、角色一动不动」，
+                # 只能去日志里猜那句英文报错是什么意思。
+                self.button_start_pause.setChecked(False)
+                from src.input.InterceptionController import how_to_install_driver
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Warning)
+                box.setWindowTitle("还差一步：按键驱动没装")
+                box.setText(
+                    "程序已经装好了，但**按键驱动**还需要单独装一次 ——"
+                    "这是两个不同的东西。\n\n"
+                    "没有它，工具按不动你的角色（表现就是「点了开始，角色一动不动」）。")
+                box.setInformativeText(how_to_install_driver())
+                box.exec_()
             else:
                 # Start failed
                 self.button_start_pause.setChecked(False)

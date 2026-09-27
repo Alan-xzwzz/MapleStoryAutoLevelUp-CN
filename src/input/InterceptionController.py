@@ -27,6 +27,66 @@ KEY_HOLD_MIN = 40
 KEY_HOLD_MAX = 90
 
 
+# ── 驱动可用性检查（2026-09-27 加）──────────────────────────────────────────
+# 为什么需要它：Interception **内核驱动不是 pip 装包就有的**，要单独下载安装
+#   并重启电脑。而项目原先**没有任何前置检查** —— 用户只有在引擎跑起来、
+#   发现角色一动不动之后，才在日志里看到一句英文报错
+#   （interception driver was not found or is not installed）。
+#   实测（2026-09-27，issue #2）用户就是这样卡住的：他下载的是免安装包，
+#   既不知道要装驱动，也没有 Python 去 pip install。
+#
+# ⇒ 提供一个**可以在启动前调用**的检查，让界面能明确告诉用户「缺什么、怎么装」，
+#   而不是让他对着"角色不动"干猜。
+
+DRIVER_DOWNLOAD_URL = "https://github.com/oblitum/Interception/releases/latest"
+
+
+def driver_status():
+    """检查 Interception 是否可用（不抛异常）。
+
+    Returns:
+        (ok: bool, detail: str)
+            ok=True  —— 驱动可用，detail 是设备信息
+            ok=False —— 不可用，detail 是**给人看的原因**
+    """
+    if interception is None:
+        return False, ("interception-python 这个 Python 库没装上"
+                       "（源码运行请 pip install -r requirements.txt）")
+    try:
+        init_interception()
+        return True, (f"键盘设备={interception.get_keyboard()}，"
+                      f"鼠标设备={interception.get_mouse()}")
+    except Exception as e:                                   # noqa: BLE001
+        msg = str(e)
+        if "not found or is not installed" in msg or "DriverNotFound" in msg:
+            return False, ("**Interception 内核驱动没有安装**（这是两回事："
+                           "程序装了，驱动还要单独装一次，装完要重启电脑）")
+        return False, f"Interception 初始化失败：{msg}"
+
+
+def how_to_install_driver():
+    """返回一段**可以直接展示给用户**的驱动安装指引（纯文本，供弹窗/日志用）。"""
+    return (
+        "这个工具用内核级驱动给游戏发按键，需要单独装一次驱动。\n"
+        "\n"
+        "装法（只做一次）：\n"
+        f"　1. 打开 {DRIVER_DOWNLOAD_URL}\n"
+        "　　 下载 Interception.zip 并解压；\n"
+        "　2. 在解压出来的文件夹里，右键『以管理员身份运行』命令提示符；\n"
+        "　3. 在里面执行：\n"
+        "　　 install-interception.exe /install\n"
+        "　4. 装完**重启电脑**，再打开本程序。\n"
+        "\n"
+        "确认装好没有：重新打开本程序，日志里不应再出现\n"
+        "「Interception 初始化失败」。\n"
+        "\n"
+        "⚠️ 两点提醒：\n"
+        "　· 必须重启电脑，不重启不生效；\n"
+        "　· 极少数机器上装完可能出现键鼠异常。真出问题：开机时进\n"
+        "　　 安全模式，把 C:\\Windows\\System32\\drivers\\ 下的\n"
+        "　　 keyboard.sys / mouse.sys 删掉即可恢复（装之前先记下这条）。")
+
+
 def init_interception():
     """初始化 Interception 驱动并自动识别键盘设备"""
     global _interception_initialized
