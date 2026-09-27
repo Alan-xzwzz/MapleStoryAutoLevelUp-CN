@@ -1484,7 +1484,23 @@ class MapleStoryAutoBot:
         # Get window game raw frame
         self.frame = self.capture.get_frame()
         if self.frame is None:
-            logger.warning("Failed to capture game frame.")
+            # ★ 2026-09-27 修（issue #2 排查中发现）：
+            #   原来只有一句英文 "Failed to capture game frame."，且**每帧都打**
+            #   （主循环 30fps ⇒ 每秒 30 行），既看不懂又把日志冲爆。
+            #   现在：① 说人话 + 给出最可能的原因与怎么办；
+            #         ② 按时间节流（每 10 秒最多一条），把日志留给有用信息。
+            now = time.time()
+            if now - getattr(self, "_t_last_noframe_warn", 0.0) > 10:
+                self._t_last_noframe_warn = now
+                logger.error(
+                    "[抓帧] 拿不到游戏画面（这一帧没有画面数据）——\n"
+                    "        角色不会动、也不会打怪，因为工具「看不见」游戏。\n"
+                    "        最常见原因（按顺序查）：\n"
+                    "          ① 游戏窗口被**最小化**了（挡住没事，最小化不行）；\n"
+                    "          ② 游戏窗口被切到了**另一个虚拟桌面**（Win+Tab 看看）；\n"
+                    "          ③ 游戏刚被关闭 / 还在加载。\n"
+                    "        处理：把游戏窗口还原到当前桌面，工具会自动恢复。\n"
+                    "        （本条提示 10 秒内最多出现一次，不刷屏）")
             return
 
         raw_h, raw_w = self.frame.shape[:2]
@@ -4034,21 +4050,34 @@ class MapleStoryAutoBot:
                 ret = self.run_once()
                 self._perf("整帧", _perf_t0)
                 if self.n_loop_err:
-                    logger.info(f"[主循环] 已从异常中恢复（连续失败 {self.n_loop_err} 帧）")
+                    # ⚠️ 2026-09-27：这条原来**每次「失败→成功」都打一遍**，
+                    #    而"每帧抛异常、偶尔成功一帧"的场景下它同样被刷爆
+                    #    （用户日志里出现 13 次，与堆栈一起把有用信息淹掉）。
+                    #    恢复本身是好消息、信息量低，只在**累计失败超过 5 帧**时
+                    #    报一次即可 —— 偶发单帧抖动不值得留痕。
+                    if self.n_loop_err > 5:
+                        logger.info(
+                            f"[主循环] 已从异常中恢复（此前连续失败 {self.n_loop_err} 帧）")
                     self.n_loop_err = 0
             except Exception as e:
                 self.n_loop_err += 1
                 now = time.time()
-                if self.n_loop_err == 1:
-                    # 第一次必须打完整堆栈，否则等于没信息
+                # ★ 2026-09-27 修「堆栈刷屏」（issue #2 用户日志实证）：
+                #   原逻辑是「n_loop_err == 1 就打完整堆栈」，但 n_loop_err 在
+                #   **成功一帧后会被清零**（见上面 if self.n_loop_err 那段）。
+                #   于是"失败一帧 → 成功一帧 → 再失败"这种交替场景下，
+                #   每次都重新从 1 开始 ⇒ **每帧都打一遍十几行完整堆栈**。
+                #   用户日志实测：1 秒内好几轮，几十行堆栈把有用信息全埋了。
+                #   ⇒ 改成**按时间节流**（与项目其它日志节流同一套做法）：
+                #     同一类异常 5 秒内只详细报一次，其余静默计数；
+                #     打印时带上累计次数，避免"看起来只错了一次"的误导。
+                if now - getattr(self, "t_last_loop_err", 0.0) > 5:
+                    self.t_last_loop_err = now
+                    # 距上次 ≥5 秒 → 详细报（含完整堆栈）
                     logger.error(
-                        "[主循环] run_once 抛异常，挂机已停止推进。完整堆栈如下：\n"
+                        f"[主循环] run_once 抛异常，挂机已停止推进"
+                        f"（累计失败 {self.n_loop_err} 帧）。完整堆栈如下：\n"
                         + traceback.format_exc())
-                elif now - self.t_last_loop_err > 5:
-                    logger.error(
-                        f"[主循环] run_once 已连续失败 {self.n_loop_err} 帧，"
-                        f"最近一次：{type(e).__name__}: {e}")
-                self.t_last_loop_err = now
                 ret = -1
 
             # Only proceed if the frame is valid
