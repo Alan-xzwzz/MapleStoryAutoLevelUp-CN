@@ -71,11 +71,17 @@ jobs:
             'verify_driver_precheck',
             'verify_home_none_no_crash',
             'verify_log_no_flood',
-            'verify_bars_potions'
+            'verify_bars_potions',
+            'verify_ci_green_check'
           )
           # ⚠️ 注意：tools/verify_nametag_fallback_limit.py **不进 CI** ——
           #    它依赖本机真机截图（debug/ 下，不进仓库），CI 里会永远"跳过"，
           #    放进来只是装样子。它在开发机上跑（改了名字定位之后手动执行）。
+          #
+          # ⚠️ 注意：tools/verify_ci_green.py（发版前 CI 门禁）**也不进 CI** ——
+          #    它检查的正是"当前 commit 的 CI 是否绿"，而 CI 自己跑时那个 CI
+          #    正在进行中，放进来必然自相矛盾（永远 pending）。它是**发版前**
+          #    给人跑的一步；但它的**判据**由 verify_ci_green_check 离线钉住。
           $failed = @()
           foreach ($t in $tests) {
             Write-Host "===== $t ====="

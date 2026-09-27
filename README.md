@@ -207,6 +207,21 @@ python -m src.engine.MapleStoryAutoLevelUp --record          # 录制调试视�
 
 ### 发版：完整包 + 增量补丁
 
+> **⚠️ 发版前必须先过 CI 门禁**（2026-09-27 加，因一次真实翻车）：
+>
+> ```bash
+> python -m tools.verify_ci_green
+> ```
+>
+> 它按**当前 commit 的 sha** 查最近一次 CI，只有结论是 `success` 才放行。
+> 不是 success（含还在跑、查不到、failure）一律拦住并指出怎么查。
+>
+> **为什么必须这一步**：本地 13 项自检绿 **不代表** CI 绿 ——
+> 本地有 CI 环境没有的文件（典型：`config/config_data.yaml` 是用户数据、
+> 不进仓库），这类问题本地永远测不出来。2026-09-27 发 v1.1.0-beta.1 时
+> 就是"本地绿 → 直接发版 → CI 随后变红"，说明发版流程里当时**没有看 CI 这一步**。
+> ⇒ 现在做成机器检查，不靠人记得去点 Actions 页面。
+
 完整包约 **106MB**，但其中 250MB+ 是 Python 运行时与第三方库（`_internal/`），**我们自己的代码只有约 6MB**（内嵌在 exe 里）。所以小改动不该让用户重下整个包 —— 发版时**两个都传**：
 
 ```bash
@@ -275,6 +290,7 @@ python -m tools.verify_navigation         # 导航与路线
 python -m tools.verify_home_route         # 回正线
 python -m tools.verify_recorder_action    # 录制器动作读取
 python -m tools.verify_bars_potions       # 血蓝监控 + 自动喝药（含"不在前台不发键"回归）
+python -m tools.verify_ci_green_check     # 发版门禁的判据本身（离线，不联网）
 ```
 
 > CI 里登记的那批在 `.github/workflows/ci.yml`，改动 `src/` 后请一并跑一遍。
