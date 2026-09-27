@@ -1049,7 +1049,9 @@ class MainWindow(QMainWindow):
         #    ⇒ 正确顺序：标名字 → 录路线(产生地图) → 选地图 → 截怪 → 开始。
         guide = QLabel(
             "<b>① F2 标定名字</b>　<font color=gray>只有换角色才要做</font><br>"
-            "　框住游戏画面里角色的名字行，再点一下角色中心。不标的话角色定位会失效。<br><br>"
+            "　先在弹出的输入框里填你角色的名字（和游戏里一模一样），点确定；<br>"
+            "　然后在游戏画面上<b>框住角色的名字行</b>，再<b>点一下角色中心</b>。"
+            "不标的话角色定位会失效。<br><br>"
 
             "<b>② F4 录挂机路线</b>　<font color=gray>要管理员运行本程序，"
             "否则收不到游戏里的按键</font><br>"
@@ -1539,7 +1541,7 @@ class MainWindow(QMainWindow):
         self.button_nametag = QPushButton("F2 标定名字")
         self.button_nametag.setToolTip(
             "标定「角色名标签」模板 + 位置偏移 —— 换角色后必做一次。\n"
-            "打开独立窗口：框住游戏画面里角色的名字行，再点一下角色中心。")
+            "先在输入框填角色名，再在游戏画面里框住角色的名字行、点一下角色中心。")
         self.button_nametag.clicked.connect(self._hotkey_f2_guarded)
 
         self.button_template = QPushButton("F3 截怪物模板")
@@ -2580,10 +2582,60 @@ class MainWindow(QMainWindow):
             except Exception:
                 return False   # 拿不到前台信息：下面的 activate 仍会兜底
 
+        # ── 窗口尺寸预检（2026-09-27 加，issue #2 的真因）─────────────────────
+        # 为什么必须在启动录制器**之前**查：
+        #   config 的 game_window.size 是**客户区尺寸**，录制器抓帧后会按它裁剪
+        #   （crop_frame_to_client）。窗口尺寸对不上 → 每帧裁剪都返回 None →
+        #   录制器刷 10 秒"还没抓到游戏画面"后 sys.exit(2)。
+        #   而它给出的提示原来是"等待游戏窗口聚焦"——把用户引去查前台、查双屏，
+        #   真因（窗口比配置小）完全看不出来（issue #2 实测就是这么卡住的：
+        #   配置 1366x768、实际客户区 1282x707）。
+        # ⇒ 在这里就拦下来，直接告诉他差多少、怎么调。
+        try:
+            import win32gui
+            from src.utils.common import find_game_window_hwnd
+            _hwnd = find_game_window_hwnd(title)
+            _size = self.cfg["game_window"].get("size")     # [高, 宽]
+            if _hwnd and _size:
+                _cl = win32gui.GetClientRect(_hwnd)
+                _cw, _ch = int(_cl[2] - _cl[0]), int(_cl[3] - _cl[1])
+                _th, _tw = int(_size[0]), int(_size[1])
+                if (_cw, _ch) != (_tw, _th):
+                    QMessageBox.warning(
+                        self, "游戏窗口尺寸不对",
+                        f"游戏窗口的画面区域（不含最上面那条标题栏）现在的大小是\n"
+                        f"　　{_cw} x {_ch}（宽 x 高）\n"
+                        f"而配置里写的是 {_tw} x {_th}。\n\n"
+                        f"录制器要按配置的尺寸去裁画面，对不上就一帧都拿不到 ——\n"
+                        f"这就是它报「抓不到游戏画面」的真正原因。\n\n"
+                        f"两种改法，任选一种：\n"
+                        f"　① 把游戏窗口拖成 {_tw} x {_th}（不含标题栏），再按 F4；\n"
+                        f"　② 在项目目录运行下面这条命令，让它按你现在的窗口大小\n"
+                        f"　　 自动改配置（推荐，不用手动量）：\n"
+                        f"　　 python -m tools.measure_window --write-config\n\n"
+                        f"注意：这跟「前台」没关系，也不是双屏导致的，不用去查那些。")
+                    return False
+        except Exception:
+            pass   # 查不了就照旧流程走 —— 不因为这段新检查把路堵死
+
         if not _is_foreground():
             try:
                 from src.utils.common import activate_game_window
-                activate_game_window(title)
+                # ⚠️ 2026-09-27 修（issue #2）：**必须看返回值**。
+                #    原实现只 except 异常，而 activate_game_window 在"切不过去"时
+                #    **不抛异常、只返回 False**（它对常规/强制两条路都试过、
+                #    各自核对过 GetForegroundWindow 才给结论）。
+                #    于是切换失败时这里照样往下走、照样启动录制器 ——
+                #    录制器第一帧抓到的是主界面，用户看到的就是"明明没切过去却开录了"。
+                _ok = activate_game_window(title)
+                if not _ok:
+                    QMessageBox.warning(
+                        self, "没能把游戏窗口切到前台",
+                        f"试了两种办法，前台仍然不是「{title}」。\n\n"
+                        f"请手动点一下游戏窗口，让它显示在最前面，然后再按 F4。\n\n"
+                        f"（这一步是必要的：录制器第一帧必须抓到游戏画面，"
+                        f"才能建立世界坐标系。）")
+                    return False
             except Exception as e:
                 QMessageBox.warning(
                     self, "找不到游戏窗口",

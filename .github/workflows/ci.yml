@@ -55,7 +55,8 @@ jobs:
             'verify_recorder_action',
             'verify_home_restore',
             'verify_jump_cooldown',
-            'verify_mob_template_qa'
+            'verify_mob_template_qa',
+            'verify_no_frame_reason'
           )
           $failed = @()
           foreach ($t in $tests) {

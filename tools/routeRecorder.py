@@ -202,13 +202,88 @@ class RouteRecorder():
             if not h:
                 return "窗口句柄未知"
             fg = win32gui.GetForegroundWindow()
-            return (f"IsWindow={bool(win32gui.IsWindow(h))} "
-                    f"IsIconic={bool(win32gui.IsIconic(h))} "
-                    f"IsVisible={bool(win32gui.IsWindowVisible(h))} "
-                    f"rect={win32gui.GetWindowRect(h)} "
-                    f"是前台={fg == h}（当前前台={win32gui.GetWindowText(fg)!r}）")
+            fg_title = win32gui.GetWindowText(fg) if fg else ""
+            # ⚠️ 2026-09-27：每个查询各自 try —— 原来整串共用一个 try，
+            #    只要 GetWindowRect 一次失败（句柄刚失效 / 权限问题），
+            #    整条诊断就退化成一句"窗口诊断失败：..."，把**本来拿得到的**
+            #    客户区尺寸一起吃掉。而尺寸恰恰是 issue #2 的真因所在。
+            #    ⇒ 谁失败谁显示"取不到"，不影响其它字段。
+            def _q(fn, default="?"):
+                try:
+                    return fn()
+                except Exception:
+                    return default
+
+            rect_txt = _q(lambda: str(win32gui.GetWindowRect(h)), "取不到")
+            # 客户区尺寸 vs 配置尺寸（口径说明见下）
+            try:
+                cl = win32gui.GetClientRect(h)                 # (left, top, right, bottom)
+                cw, ch = int(cl[2] - cl[0]), int(cl[3] - cl[1])
+                th, tw = (self.cfg.get("game_window", {}).get("size") or [None, None])
+                if th and tw:
+                    _ok = "✓尺寸相符" if (cw, ch) == (int(tw), int(th)) else \
+                          f"✗差了 {cw - int(tw):+d}×{ch - int(th):+d}(宽×高)"
+                    size_txt = f"客户区={cw}x{ch} vs 配置={int(tw)}x{int(th)} {_ok}"
+                else:
+                    size_txt = f"客户区={cw}x{ch}（配置未声明 size）"
+            except Exception:
+                size_txt = "客户区尺寸取不到"
+            return (f"IsWindow={_q(lambda: bool(win32gui.IsWindow(h)))} "
+                    f"IsIconic={_q(lambda: bool(win32gui.IsIconic(h)))} "
+                    f"IsVisible={_q(lambda: bool(win32gui.IsWindowVisible(h)))} "
+                    f"rect={rect_txt} {size_txt} "
+                    f"是前台={fg == h}（当前前台={fg_title!r}）")
         except Exception as e:                                # noqa: BLE001
             return f"窗口诊断失败：{e}"
+
+    def _no_frame_reason(self):
+        """抓不到画面时，按**真实原因**给一句能直接照做的提示（2026-09-27 加）。
+
+        ⚠️ 为什么必须分段判原因（issue #2 的真实教训）：
+          原实现不管什么原因，一律打「等待游戏窗口聚焦。若一直卡在这里：
+          游戏窗口是否被挡住/最小化？」—— 而 issue #2 的真因**与前台无关**，
+          是**窗口客户区尺寸比 config 声明的小**（配置 1366x768，实测 1282x707）
+          ⇒ crop_frame_to_client 每次返回 None ⇒ 10 秒后 sys.exit(2)。
+          用户顺着这句提示去查前台、查双屏、换单屏，全是错方向，
+          最后把问题描述成"无法识别前台"报了上来。
+
+        Returns:
+            (str 原因短语, str 建议操作)
+        """
+        try:
+            import win32gui
+            h = getattr(self.capture, "window_hwnd", None)
+            if not h or not win32gui.IsWindow(h):
+                return ("窗口句柄已失效（游戏可能已经关了）",
+                        "重新打开游戏，再按 F4 重来。")
+            if win32gui.IsIconic(h):
+                return ("游戏窗口被最小化了（抓屏抓不到最小化的窗口）",
+                        "点任务栏上的游戏窗口把它还原（别最小化），再按 F4。")
+            if not win32gui.IsWindowVisible(h):
+                return ("游戏窗口被隐藏了",
+                        "在任务栏上把它显示出来，再按 F4。")
+            cl = win32gui.GetClientRect(h)
+            cw, ch = int(cl[2] - cl[0]), int(cl[3] - cl[1])
+            th, tw = (self.cfg.get("game_window", {}).get("size") or [None, None])
+            if th and tw and (cw, ch) != (int(tw), int(th)):
+                return (
+                    f"游戏窗口的客户区尺寸是 {cw}x{ch}（宽x高），"
+                    f"而配置声明的是 {int(tw)}x{int(th)} —— 对不上，"
+                    f"裁剪这一步每次都失败，所以一帧都拿不到。",
+                    f"把游戏窗口调到 **{int(tw)}x{int(th)}**（不含标题栏），"
+                    f"或运行 `python -m tools.measure_window --write-config` "
+                    f"按你现在的窗口尺寸改配置。\n"
+                    f"        注意：这与「前台 / 双屏」无关，不用查那些。")
+            frame = getattr(self.capture, "frame", None)
+            if frame is None:
+                return ("窗口是好的，但抓帧库一帧都没送上来"
+                        "（Graphics Capture 与被抓窗口的渲染方式不兼容）",
+                        "试试点一下游戏窗口让它重绘；仍不行就把游戏切到窗口模式"
+                        "（别用全屏/无边框），再按 F4。")
+            return ("抓到了帧，但内容对不上（多半是帧尺寸与预期不符）",
+                    "运行 `python -m tools.measure_window` 看实测口径。")
+        except Exception as e:                                # noqa: BLE001
+            return (f"诊断时出错：{e}", "运行 `python -m tools.measure_window` 看实测口径。")
 
     def get_img_frame(self):
         '''
@@ -244,9 +319,20 @@ class RouteRecorder():
 
         img, msg = crop_frame_to_client(self.frame, target_size, title_bar, tag="路线录制")
         if img is None:
-            logger.error(f"[路线录制] 画面尺寸不符：{msg}")
-            logger.error("[路线录制] 请把游戏窗口调成 config 声明的尺寸（不含标题栏），"
-                         "或运行 `python -m tools.measure_window --write-config` 按实测值改配置。")
+            # ⚠️ 2026-09-27 修（issue #2）：原来这里**没有降频**、也**没有更新
+            #    _t_frame_wait_start**，于是裁剪失败时：
+            #      ① 每帧都打一条 ERROR（日志被刷爆）；
+            #      ② 等待计时器还停在 0 —— 上面那句"已等 N s"继续从 0 数，
+            #         看起来像"刚启动就失败"，掩盖了它其实已经失败了很久。
+            #    现在与抓不到帧那条路一样降频，并把原因按 _no_frame_reason 说清。
+            now = time.time()
+            if now - self._t_last_noframe_log >= 2.0:
+                self._t_last_noframe_log = now
+                _why, _fix = self._no_frame_reason()
+                logger.error(
+                    f"[路线录制] 画面尺寸不符：{msg}\n"
+                    f"        原因：{_why}\n"
+                    f"        怎么办：{_fix}")
             return
 
         if not self._first_frame_logged:
@@ -1475,15 +1561,23 @@ class RouteRecorder():
                 if waited < self._first_frame_grace:
                     if int(waited * 2) != int(max(0, waited - 0.5) * 2):
                         # 每 0.5 秒提示一次，别刷屏
+                        # ⚠️ 2026-09-27 修（issue #2）：原来这里写死
+                        #    "等待游戏窗口聚焦。若一直卡在这里：游戏窗口是否被挡住/最小化？"
+                        #    —— 真因往往是**别的**（窗口尺寸不符 / 抓帧库没送帧），
+                        #    用户顺着这句去查前台、查双屏、换单屏，全是错方向。
+                        #    改成按真实原因给提示（见 _no_frame_reason）。
+                        _why, _fix = self._no_frame_reason()
                         logger.warning(
-                            f"[录制] 还没抓到游戏画面（已等 {waited:.1f}s）—— "
-                            f"等待游戏窗口聚焦。若一直卡在这里：游戏窗口是否被挡住/最小化？")
+                            f"[录制] 还没抓到游戏画面（已等 {waited:.1f}s）—— {_why}\n"
+                            f"        怎么办：{_fix}\n"
+                            f"        当前窗口：{self._win_diag()}")
                     return -1
-                msg = ("一直抓不到游戏画面（等了 "
+                _why, _fix = self._no_frame_reason()
+                msg = (f"一直抓不到游戏画面（等了 "
                        f"{self._first_frame_grace:.0f} 秒）—— 无法建立世界坐标系。\n"
-                       "排查：① 游戏窗口是否被挡住 / 最小化；"
-                       "② 抓到的画面是否真的是游戏（不是主界面/桌面）；"
-                       "③ 小地图是否被游戏内 UI 关掉了。")
+                       f"原因：{_why}\n"
+                       f"怎么办：{_fix}\n"
+                       f"窗口状态：{self._win_diag()}")
                 logger.error("[录制] " + msg)
                 self._err_msg = msg.replace("\n", " ")
                 self._emit_state()
