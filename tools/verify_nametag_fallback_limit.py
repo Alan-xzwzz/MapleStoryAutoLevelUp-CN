@@ -34,7 +34,8 @@ def main():
         print("跳过：缺真实截图素材（debug/ 下，不进仓库）")
         print(f"  需要：{FRAME}")
         print(f"  需要：{TPL}")
-        print("  生成方式：先跑 tools/grab_frame（抓游戏画面）+ tools/probe_nametag_perf（抠名字模板）")
+        print("  生成方式：先跑 tools/grab_frame（抓一帧游戏画面），")
+        print("            再从画面里把角色名那行抠出来存成 debug/_nametag_template.png")
         print("  ⇒ 本检查只在有真机素材的机器上跑得动，CI 里跳过。")
         return 0
     cam = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[:UI_Y_START, :]
