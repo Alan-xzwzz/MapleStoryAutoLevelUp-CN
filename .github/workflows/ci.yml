@@ -72,6 +72,9 @@ jobs:
             'verify_home_none_no_crash',
             'verify_log_no_flood'
           )
+          # ⚠️ 注意：tools/verify_nametag_fallback_limit.py **不进 CI** ——
+          #    它依赖本机真机截图（debug/ 下，不进仓库），CI 里会永远"跳过"，
+          #    放进来只是装样子。它在开发机上跑（改了名字定位之后手动执行）。
           $failed = @()
           foreach ($t in $tests) {
             Write-Host "===== $t ====="

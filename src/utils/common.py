@@ -488,7 +488,8 @@ def find_pattern_sqdiff(
         last_result=None,
         mask=None,
         local_search_radius=50,
-        global_threshold=0.4
+        global_threshold=0.4,
+        allow_global_fallback=True
     ):
     '''
     Perform masked template matching using SQDIFF_NORMED method.
@@ -500,6 +501,17 @@ def find_pattern_sqdiff(
     Parameters:
     - img: Target search image (numpy array), can be grayscale or BGR.
     - img_pattern: Template image to search for (numpy array, BGR).
+    - allow_global_fallback: 局部搜索不达标时，是否允许**退回全图搜索**。
+      ⚠️ 默认 True = 保持原有行为不变（所有既有调用方不受影响）。
+      设为 False 时：局部搜索不达标就直接返回局部结果，**不做全图搜索**。
+      为什么要有这个开关（2026-09-27 实测）：
+        全图搜索约 20ms，局部只要 0.4ms（差 50 倍）。而名字定位一次会跑
+        2~4 次匹配（主匹配 + 兜底切块），**每次失败都各自回退全图** ⇒
+        失败时单帧要 80ms（用户实测 95ms/帧 ≈ 10fps）。
+        但"失败"往往只是那一块名牌被别的玩家盖住，并**不代表位置变了** ——
+        让同一次定位里只回退一次全图就够，其余走局部即可。
+      ⚠️ 只传 False、不配合"限流"会导致一次都不做全图，定位能力下降；
+      调用方应自行保证"至少让第一次允许回退"。
 
     Returns:
     - min_loc: The top-left coordinate (x, y) of the best match position.
@@ -511,6 +523,7 @@ def find_pattern_sqdiff(
 
     # search last result location first to speedup
     h, w = img_pattern.shape[:2]
+    _local_done = False
     if last_result is not None and global_threshold > 0.0:
         lx, ly = last_result
         x0 = max(0, lx - local_search_radius)
@@ -529,6 +542,20 @@ def find_pattern_sqdiff(
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
             if min_val < global_threshold:
                 return (x0 + min_loc[0], y0 + min_loc[1]), min_val, True
+            # 局部搜过了但分数不达标：记住它，供禁用全图回退时返回
+            _local_done = True
+            _local_result = ((x0 + min_loc[0], y0 + min_loc[1]), min_val)
+        else:
+            _local_result = None
+    else:
+        _local_result = None
+
+    # ★ 2026-09-27 加：调用方可以禁止回退全图（见参数说明）。
+    #   此时返回**局部搜到的结果**（哪怕分数不达标），语义是"就地给个最像的"。
+    #   ⚠️ 若连局部都没跑成（_local_result 为 None），仍走全图 ——
+    #      否则就没有任何结果可返回了。
+    if not allow_global_fallback and _local_result is not None:
+        return _local_result[0], _local_result[1], False
 
     # Global fallback
     res = cv2.matchTemplate(

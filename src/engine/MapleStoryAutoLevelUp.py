@@ -960,6 +960,20 @@ class MapleStoryAutoBot:
         _accepted = None      # 这一遍就达标了
         _best_try = None      # 都没达标时留一个最好的，供调试图显示
 
+        # ── ★ 2026-09-27：全图回退**限流**（性能修复，见 docs/待优化-名字定位耗时.md）──
+        # 为什么（真机实测数据）：
+        #   · 全图搜索 ≈ 20ms，局部搜索 ≈ 0.4ms（**差 50 倍**）
+        #   · 但一次名字定位会跑 2~4 次匹配（主匹配整块 → 兜底切块各一块），
+        #     而**每一次失败都各自回退全图** ⇒ 失败时单帧 ≈ 82ms
+        #     实测复现：用户报「名字定位 80ms、整帧 95ms ≈ 10fps」→ 本机 82.3ms ✅
+        #   · 而"失败"通常只是**那一小块名牌被别的玩家盖住**，并不代表位置变了 ——
+        #     让同一次定位里**只在第一次允许回退全图**，其余走局部就够。
+        # 预期收益（实测）：82ms → 22ms，整帧 97ms → 37ms，约 10fps → 27fps。
+        # ⚠️ 正确性保障：**第一次匹配仍允许全图**（那是唯一可能"位置真的大幅变化"
+        #    的时刻，例如刚切地图、刚复活）。只有后续切块才禁用 —— 它们搜的是
+        #    同一个名字的不同片段，位置必然一致，没必要各自再做一次全图。
+        _global_used = False
+
         for num_splits, is_fallback in passes:
             w_split = w // num_splits
 
@@ -981,13 +995,21 @@ class MapleStoryAutoBot:
             # Match tempalte
             matches = []
             for tag_type, split in nametag_splits.items():
+                # ★ 限流：只在**还没用过全图**时允许回退（见上方 _global_used 的说明）。
+                #   第一次之后一律禁用 —— 局部搜不到就返回局部结果，
+                #   不再为同一帧的其它切块付 20ms 的全图代价。
                 loc, score, is_cached = find_pattern_sqdiff(
                     img_roi,
                     split["img"],
                     last_result=split["last_result"],
                     mask=split["mask"],
-                    global_threshold=self.cfg["nametag"]["global_diff_thres"]
+                    global_threshold=self.cfg["nametag"]["global_diff_thres"],
+                    allow_global_fallback=(not _global_used)
                 )
+                # 这次实际走了全图 → 后续切块不再允许（is_cached=False 表示未命中局部缓存，
+                # 即走了全图那条路）
+                if not is_cached:
+                    _global_used = True
                 w_match = split["img"].shape[1]
                 h_match = split["img"].shape[0]
                 score += split["score_penalty"]
