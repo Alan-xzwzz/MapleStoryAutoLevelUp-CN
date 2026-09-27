@@ -70,7 +70,8 @@ jobs:
             'verify_key_failure_visible',
             'verify_driver_precheck',
             'verify_home_none_no_crash',
-            'verify_log_no_flood'
+            'verify_log_no_flood',
+            'verify_bars_potions'
           )
           # ⚠️ 注意：tools/verify_nametag_fallback_limit.py **不进 CI** ——
           #    它依赖本机真机截图（debug/ 下，不进仓库），CI 里会永远"跳过"，

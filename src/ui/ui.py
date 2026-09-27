@@ -66,10 +66,23 @@ ADV_SETTINGS_HIDE = [
     'game_window',          # 窗口标题 / 尺寸  -> 同上
     'system',               # 线程帧率 / 语言  -> 底层性能参数
     'watchdog',             # 看门狗参数      -> 卡死判定阈值，默认值即可
+    # 🧪 'bars' 2026-09-27 加：血条/蓝条识别参数（roi / span / HSV）
+    #    这些是**开发期在真机上量出来的**，不是调参项 —— 用户改只会把读数搞错，
+    #    而且改错了的症状是"血满着疯狂喝药"或"永远读不到"，很难联想到是这里。
+    #    所以整段收起来，用户不需要也不该接触（用户零配置，见交接文档）。
+    'bars',
+    # 🧪 'potion' 显示在界面上，但用 ADV_FIELD_HIDE 收掉"不该手改"的键 ——
+    #    用户真正要调的只有「药水键」和「什么时候喝」，其余留给界面上的
+    #    「🧪 自动喝药」面板（那里显示成人话）。
 ]
 
 # 段内隐藏：只留「用户真的会调」的项，算法内部阈值一律收起来
 ADV_FIELD_HIDE = {
+    # 🧪 potion（2026-09-27）：面板上已经用大白话展示了全部档位与冷却，
+    #    这里只放行 enabled / hp / mp / confirm_frames / *_cooldown_sec
+    #    中"用户会改"的那几个，见 create_potion_gbox 的说明。
+    #    ⚠️ 档位列表（hp/mp）是嵌套结构，高级设置页渲染不了，必须收起来。
+    'potion':         ['hp', 'mp'],
     'nametag':        ['mode', 'global_diff_thres', 'split_width'],
     'monster_detect': ['diff_thres', 'search_box_margin', 'contour_blur',
                        'hp_bar_color', 'max_mob_area_trigger'],
@@ -748,6 +761,15 @@ class MainWindow(QMainWindow):
         self._map_scan_timer.timeout.connect(self.refresh_map_list)
         self._map_scan_timer.start(5000)
 
+        # 自动喝药面板刷新（2026-09-27 加）：环境提示 + 实时血蓝读数。
+        # 为什么用定时器而不是只在开始时刷一次：
+        #   ① 环境（窗口大小 / 缩放）随时可能被用户改掉；
+        #   ② 挂机中的血蓝百分比要能实时看到 —— 不然"到底有没有在工作"
+        #      只能靠翻日志，而血蓝监控失效时的表现恰恰是"什么都不发生"。
+        self._potion_timer = QTimer(self)
+        self._potion_timer.timeout.connect(self._refresh_potion_live)
+        self._potion_timer.start(2000)
+
         # Signal
         self.request_close.connect(self.close)
         # 游戏内 F1~F4 热键 → 主界面功能（信号回主线程，pynput 线程只 emit）
@@ -844,6 +866,10 @@ class MainWindow(QMainWindow):
         # Map selection group box
         self.map_selection_gbox = self.create_map_selection_gbox()
         scroll_layout.addWidget(self.map_selection_gbox)
+
+        # 🧪 自动喝药（2026-09-27 加）
+        self.potion_gbox = self.create_potion_gbox()
+        scroll_layout.addWidget(self.potion_gbox)
 
         # Logger output window
         self.log_gbox = self.create_log_gbox()
@@ -1433,6 +1459,268 @@ class MainWindow(QMainWindow):
 
         gbox.setLayout(layout)
         return gbox
+
+    def create_potion_gbox(self):
+        '''🧪 自动喝药面板（2026-09-27 加，自己写的，未照搬上游 PR 的面板）。
+
+        【它解决什么】
+          挂机时血/蓝掉太快、手动补不过来 —— 这个面板让工具自己盯着血条蓝条，
+          低于设定的线就帮你按一下药水键。
+
+        【设计取舍（为什么长这样）】
+          · 用户**不需要填任何数字**：血条蓝条的位置、颜色、满值宽度
+            都是开发期在真机上量好写进 config 的，这里是只读展示。
+            用户只要改「药水键」和「什么时候喝」两件事。
+          · 环境不对时**直接说明白**（而不是开了没效果）：血条位置是按
+            1366x768 窗口化量死的，环境一变就失准，所以按钮下方常驻一行
+            环境提示，能实时刷新。
+          · 一键测：不想挂机、只想确认"工具到底看不看得见我的血条"时，
+            点「试一下」跑一次读数，立刻出结果 —— 省掉"开了半天不知道有没有用"。
+        '''
+        gbox = QGroupBox("🧪 自动喝药（血蓝监控）")
+        layout = QVBoxLayout()
+
+        # ── 顶部说明（一句话讲清这个功能干嘛的）─────────────────────
+        tip = QLabel(
+            "工具会一直盯着你的血条和蓝条，掉到下面设定的位置就自动帮你按药水键。\n"
+            "血条位置是**按 1366x768 窗口化量好的**，所以不用你自己标定 —— "
+            "但环境要符合要求（见下方提示）。")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+
+        # ── 总开关 ────────────────────────────────────────────────
+        row = QHBoxLayout()
+        self.cb_potion_enabled = QCheckBox("启用自动喝药")
+        self.cb_potion_enabled.setToolTip(
+            "想自己控药（比如打 BOSS）时把它取消勾选 —— 挂机照常跑，只是不自动喝药。")
+        # 初始值从配置读（缺省开）
+        _potion_on = True
+        try:
+            _potion_on = bool(self.cfg.get("potion", {}).get("enabled", True))
+        except Exception:
+            _potion_on = True
+        self.cb_potion_enabled.setChecked(_potion_on)
+        self.cb_potion_enabled.toggled.connect(self.on_potion_toggled)
+        row.addWidget(self.cb_potion_enabled)
+
+        # 🔍 一键试读：不开挂机也能验证"到底看不看得见血条"
+        self.btn_potion_test = QPushButton("🔍 试一下（读一次血蓝）")
+        self.btn_potion_test.setToolTip(
+            "立刻读一次当前画面上的血条/蓝条，把结果告诉你。\n"
+            "用来确认环境对不对、工具看不看得见你的血条 —— 不用先开始挂机。")
+        self.btn_potion_test.clicked.connect(self.test_bars_reading)
+        row.addWidget(self.btn_potion_test)
+        row.addStretch()
+        layout.addLayout(row)
+
+        # ── 档位说明（只读文字，不是输入框 —— 见上面"用户零配置"）─────
+        self.label_potion_tiers = QLabel("")
+        self.label_potion_tiers.setWordWrap(True)
+        layout.addWidget(self.label_potion_tiers)
+
+        # ── 环境提示行（实时刷新）──────────────────────────────────
+        self.label_potion_env = QLabel("")
+        self.label_potion_env.setWordWrap(True)
+        layout.addWidget(self.label_potion_env)
+
+        # ── 实时读数行（挂钩机时的血蓝百分比）────────────────────────
+        self.label_potion_live = QLabel("读数：还没开始挂机")
+        self.label_potion_live.setWordWrap(True)
+        layout.addWidget(self.label_potion_live)
+
+        # 首次填充文字
+        self._refresh_potion_labels()
+
+        gbox.setLayout(layout)
+        return gbox
+
+    def _potion_tiers_text(self):
+        '''把配置里的档位翻译成一句人话（只读展示）。'''
+        try:
+            potion = self.cfg.get("potion", {}) or {}
+        except Exception:
+            return "读不到喝药配置。"
+
+        def _fmt(tiers, label):
+            if not tiers:
+                return f"{label}：未配置"
+            parts = []
+            for t in tiers:
+                if not isinstance(t, dict):
+                    continue
+                key = t.get("key")
+                thr = t.get("threshold")
+                name = t.get("name", "?")
+                if key:
+                    parts.append(f"低于 {thr}% 按 {key}（{name}）")
+                else:
+                    parts.append(f"低于 {thr}% 不喝（{name}）")
+            return f"{label}：" + "；".join(parts) if parts else f"{label}：未配置"
+
+        hp = _fmt(potion.get("hp"), "血")
+        mp = _fmt(potion.get("mp"), "蓝")
+        cd_h = potion.get("hp_cooldown_sec", 1.5)
+        cd_m = potion.get("mp_cooldown_sec", 1.5)
+        cf = potion.get("confirm_frames", 2)
+        return (f"{hp}\n{mp}\n"
+                f"（连续 {cf} 帧都低于才算数；两次之间至少隔 {cd_h} / {cd_m} 秒）")
+
+    def _refresh_potion_labels(self):
+        '''刷新档位文字 + 环境提示（面板初始化与定时器都会调）。'''
+        if not getattr(self, "label_potion_tiers", None):
+            return
+        try:
+            self.label_potion_tiers.setText(self._potion_tiers_text())
+        except Exception as e:                                   # noqa: BLE001
+            self.label_potion_tiers.setText(f"读喝药配置出错：{e}")
+
+        # 环境提示：这是**只读诊断**，不弹窗、不拦人 —— 真拦在引擎启动时做
+        env = "环境：检测中…"
+        try:
+            from src.utils.env_precheck import check_bars_environment
+            ok, title, msg = check_bars_environment(self.cfg)
+            if ok:
+                env = f"✅ 环境没问题 —— {title}"
+            else:
+                # 只取第一行与"怎么改"的首条，别把整段塞进面板
+                first = msg.splitlines()[0] if msg else title
+                env = f"⚠️ {title} —— {first}（详细做法请看「日志」区，点开始时会写进去）"
+        except Exception as e:                                   # noqa: BLE001
+            env = f"环境：检查失败（{e}）"
+        self.label_potion_env.setText(env)
+
+    def on_potion_toggled(self, checked):
+        '''总开关：立刻作用到正在跑的引擎（不必停挂机）。'''
+        try:
+            self.controller.auto_bot.set_potion_enabled(checked)
+        except Exception as e:                                   # noqa: BLE001
+            # 引擎还没起来（没点过开始）时这里会失败 —— 属正常，不当错误
+            logger.debug(f"[自动喝药] 开关暂时没送到引擎（多半还没开始挂机）：{e}")
+
+    def test_bars_reading(self):
+        '''🔍 试一下：抓当前画面读一次血蓝，把结果用人话告诉用户。
+
+        【为什么要有这个按钮】
+          "开了半天不知道到底有没有用"是最常见的困惑 —— 血蓝监控尤其如此：
+          它出问题时的表现是**什么都不发生**（读数不可信 → 不喝药），
+          而那是"正确行为"还是"没工作"从外面根本分不出来。
+          这个按钮把内部状态直接摊开：读到了多少、环境对不对、为什么没喝。
+        '''
+        try:
+            import numpy as np
+            from src.input.GameWindowCapturor import GameWindowCapturor
+            from src.utils.bars import BarsDetector
+            from src.utils.common import crop_frame_to_client
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.warning(self, "试不了", f"加载识别模块失败：{e}")
+            return
+
+        # ── 1. 先查环境（不对就别费劲抓帧了）─────────────────────
+        try:
+            from src.utils.env_precheck import check_bars_environment
+            ok, title, msg = check_bars_environment(self.cfg)
+        except Exception as e:                                   # noqa: BLE001
+            ok, title, msg = False, "环境检查失败", str(e)
+        if not ok:
+            QMessageBox.warning(self, title, msg)
+            return
+
+        # ── 2. 抓一帧 ────────────────────────────────────────────
+        cap = None
+        try:
+            cap = GameWindowCapturor(self.cfg)
+            # 抓帧是另一个线程在填缓冲区，给它一点时间攒出第一帧
+            for _ in range(30):
+                QApplication.processEvents()
+                time.sleep(0.1)
+                raw = cap.get_frame()
+                if raw is not None:
+                    break
+            if raw is None:
+                QMessageBox.warning(
+                    self, "读不到游戏画面",
+                    "没能从游戏窗口抓到画面。\n\n"
+                    "请确认：游戏开着、**没有被最小化**、并且已经在角色画面里"
+                    "（不是登录界面）。\n\n"
+                    "（被别的窗口挡住没关系，最小化不行。）")
+                return
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.warning(self, "试读失败", f"抓帧出错：{e}")
+            return
+        finally:
+            # 抓帧器起了后台线程，用完必须停掉，否则会一直占着资源
+            try:
+                if cap is not None:
+                    cap.stop()
+            except Exception:                                    # noqa: BLE001
+                pass
+
+        # ── 3. 裁剪 + 识别 ───────────────────────────────────────
+        try:
+            th, tw = self.cfg["game_window"]["size"]
+            frame, _msg = crop_frame_to_client(
+                raw, (int(th), int(tw)),
+                self.cfg["game_window"]["title_bar_height"], tag="试读")
+            if frame is None:
+                QMessageBox.warning(
+                    self, "画面大小对不上",
+                    f"抓到画面了，但裁不成要求的尺寸。\n\n{_msg}\n\n"
+                    "请把游戏设成 1366x768、窗口化运行。")
+                return
+
+            detector = BarsDetector.from_dict(self.cfg["bars"])
+            hp_res, mp_res = detector.detect(frame)
+        except Exception as e:                                   # noqa: BLE001
+            QMessageBox.warning(self, "识别出错", f"读血条时出错：{e}")
+            return
+
+        def _line(label, res):
+            if res.valid and res.percent is not None:
+                return f"{label}：{res.percent:.1f}%"
+            return f"{label}：读不到（{res.reason}）"
+
+        # ── 4. 把结果和人话一起给出来 ─────────────────────────────
+        body = (f"{_line('血量', hp_res)}\n"
+                f"{_line('魔法', mp_res)}\n\n"
+                f"（读到数值 = 工具看得见你的血条，功能正常。\n"
+                f"　读不到通常是：血条颜色和预设差太多、或游戏窗口不在前台。\n"
+                f"　读不到时工具**不会**乱喝药 —— 那是特意这么设计的。）")
+        QMessageBox.information(self, "试读结果", body)
+
+    def _refresh_potion_live(self):
+        '''定时刷新喝药面板：环境提示 + 挂机中的实时血蓝读数（2 秒一次）。
+
+        ⚠️ 全程静默兜底：这个定时器在界面线程里跑，它抛异常会把整个界面带崩。
+           面板刷不出来只是"少看一个数字"，绝不能因此让界面死掉。
+        '''
+        try:
+            self._refresh_potion_labels()
+        except Exception:                                        # noqa: BLE001
+            pass
+
+        try:
+            bot = getattr(self.controller, "auto_bot", None)
+            # label 还没建出来（定时器可能早于面板构建先响一次）→ 直接跳过
+            if bot is None or not getattr(self, "label_potion_live", None):
+                return
+            if not getattr(bot, "bars_ok", False):
+                return
+            hp = getattr(bot, "hp_percent", None)
+            mp = getattr(bot, "mp_percent", None)
+            if hp is None and mp is None:
+                self.label_potion_live.setText(
+                    "读数：还没有数据（点了「开始」之后才会读；"
+                    "若一直是这样，点上面的「试一下」看看）")
+                return
+            hp_s = f"{hp:.1f}%" if hp is not None else "读不到"
+            mp_s = f"{mp:.1f}%" if mp is not None else "读不到"
+            drunk = getattr(bot, "n_potion_drunk", 0)
+            state = "开" if getattr(bot, "potion_enabled", True) else "关"
+            self.label_potion_live.setText(
+                f"当前读数：血量 {hp_s} ｜ 魔法 {mp_s}　"
+                f"（本次已喝 {drunk} 次，喝药开关：{state}）")
+        except Exception:                                        # noqa: BLE001
+            pass
 
     def _update_delete_btn(self):
         '''没选中任何地图时禁用这几个按钮（避免点了没反应）。'''

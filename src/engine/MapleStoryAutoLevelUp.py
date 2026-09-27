@@ -52,6 +52,15 @@ from src.utils.home_route import (
 # ── 卡死告警（2026-09-15 加）：判定卡死后**弹置顶提示窗**，不再乱动 ──────────
 # 见 config_default.yaml 的 `watchdog.on_stuck` 与 src/utils/stuck_alert.py 的文件头。
 from src.utils import stuck_alert
+# ── 血蓝监控 + 自动喝药（2026-09-27 加）────────────────────────────────────
+# 三个纯逻辑模块移植自 Alan-xzwzz 的 PR #3（MIT，署名见各文件头）：
+#   bars.py          条状 UI 识别（HSV 阈值 + 按列统计）
+#   bar_smoothing.py 读数平滑（抑制血条闪烁造成的 0 值跳变）
+#   potions.py       喝药决策（四层防误触）+ 带前台守卫的按键执行
+from src.utils.bars import BarsDetector
+from src.utils.bar_smoothing import BarsSmoother
+from src.utils.potions import PotionDrinker, press_potion
+from src.utils.env_precheck import check_bars_environment, format_for_log
 
 class MapleStoryAutoBot:
     '''
@@ -173,6 +182,19 @@ class MapleStoryAutoBot:
         self.t_last_perf_log = time.time()
         self.t_perf_prev = time.time()
 
+        # ── 血蓝监控 + 自动喝药（2026-09-27 加）────────────────────────────
+        # 全是"库里没有就自己降级"的可选组件：配置里没 bars/potion 段时
+        # 三者都是 None，主循环整段跳过 —— 这样老配置不会因为本次改动崩掉。
+        self.bars_detector = None   # BarsDetector：识别血条/蓝条
+        self.bars_smoother = None   # BarsSmoother：读数平滑（抗闪烁）
+        self.potion_drinker = None  # PotionDrinker：喝药决策
+        self.bars_ok = False        # 环境预检是否通过（不通过则不喝药）
+        self.hp_percent = None      # 最近一次平滑后的血量（None = 当前不可信）
+        self.mp_percent = None      # 最近一次平滑后的蓝量
+        self.potion_enabled = True  # 喝药总开关（界面可实时切换）
+        self.n_potion_drunk = 0     # 本次运行累计喝了几次（给界面显示）
+        self.t_last_bars_log = time.time()  # 血蓝读数日志节流（每 5 秒一行）
+
         # 上一帧**实际发出**的左右指令（2026-09-12 加）
         # ⚠️ 为什么需要它：出招必须**先转身再按技能键**，否则技能会朝旧朝向飞出去，
         #    表现就是「后方的怪打不到」。上游 config 里躺着 character_turn_delay: 0.02，
@@ -277,8 +299,159 @@ class MapleStoryAutoBot:
                 f"        不修的话引擎会在运行中因缺键崩溃，症状是「角色不动 + 日志突然静默」。")
         return missing
 
+    def _setup_bars_and_potions(self, cfg):
+        '''装配血蓝识别 + 喝药决策（2026-09-27 加）。
+
+        失败策略：**降级，不崩**。
+            这一段是可选功能，任何一步出问题（配置没写、roi 配错、
+            环境对不上）都只把功能关掉并打日志，绝不让 load_config 抛异常 ——
+            否则"喝药配置写错"会连带把整个挂机工具堵死，代价完全不成比例。
+
+        环境预检放在这里的原因：
+            血蓝的 roi 是按 1366x768 窗口化量死的，窗口一大一小位置就偏。
+            预检**不通过就不启用喝药**（读数不可信时宁可不喝），
+            但**不影响**挂机本身 —— 照常打怪，只是不自动喝药。
+        '''
+        self.bars_detector = None
+        self.bars_smoother = None
+        self.potion_drinker = None
+        self.bars_ok = False
+        self.hp_percent = None
+        self.mp_percent = None
+        self.n_potion_drunk = 0
+
+        bars_cfg = cfg.get("bars")
+        potion_cfg = cfg.get("potion")
+        if not bars_cfg or not potion_cfg:
+            # 老配置 / 用户把段删了 —— 静默跳过（这是合法状态，不是错误）
+            logger.info("[血蓝监控] 配置里没有 bars / potion 段，本次不启用自动喝药。")
+            return
+
+        # ── 环境预检：不对就拦住（说清怎么改），只关掉喝药 ──────────────
+        try:
+            ok, title, message = check_bars_environment(cfg)
+        except Exception as e:                                       # noqa: BLE001
+            # 预检自身出错 → 不敢启用（读数可能不可信），但不拦挂机
+            logger.warning(f"[血蓝监控] 环境预检本身出错，本次不启用自动喝药：{e}")
+            return
+
+        self.bars_ok = bool(ok)
+        if not ok:
+            logger.error(format_for_log(False, title, message))
+            logger.error(
+                "[血蓝监控] 因为上面这个原因，本次**不启用自动喝药**"
+                "（挂机打怪照常进行，只是血蓝低了不会帮你按药水键）。")
+            return
+
+        logger.info(format_for_log(True, title, message))
+
+        # ── 构建检测器 / 平滑器 / 决策器 ───────────────────────────────
+        try:
+            self.bars_detector = BarsDetector.from_dict(bars_cfg)
+            # 用一帧的尺寸做一次完整校验（此刻还没有真帧，用配置里的画面尺寸）
+            target_h, target_w = cfg["game_window"]["size"]
+            self.bars_detector.validate((int(target_h), int(target_w), 3))
+        except Exception as e:                                       # noqa: BLE001
+            self.bars_detector = None
+            # ⚠️ bars_ok 必须一起复位（自检 verify_bars_potions 的用例 15 抓出来的）：
+            #    界面靠 bars_ok 决定"要不要显示实时读数"，若环境过了但配置非法，
+            #    bars_ok 留着 True 会让界面显示一行永远不更新的读数，
+            #    反而不如老实显示"没在工作"。
+            self.bars_ok = False
+            logger.error(
+                f"[血蓝监控] 血条/蓝条配置不合法，本次不启用自动喝药：{e}\n"
+                f"        这些值本该由 config/config_default.yaml 提供；"
+                f"如果改过 bars 段，把它改回出厂值或删掉 config_custom.yaml 里的覆盖。")
+            return
+
+        try:
+            # 平滑窗口 / 最大连续无效帧：与 PR 出厂值一致（见交接文档的实测结论）
+            self.bars_smoother = BarsSmoother(window=3, max_invalid_frames=10)
+            self.potion_drinker = PotionDrinker.from_dict(potion_cfg)
+            self.potion_drinker.enabled = bool(potion_cfg.get("enabled", True))
+            self.potion_enabled = self.potion_drinker.enabled
+        except Exception as e:                                       # noqa: BLE001
+            self.bars_detector = None
+            self.bars_smoother = None
+            self.potion_drinker = None
+            self.bars_ok = False     # 同上：功能没起来，界面不该显示"在工作"
+            logger.error(
+                f"[血蓝监控] 喝药配置不合法，本次不启用自动喝药：{e}\n"
+                f"        检查 config 的 potion 段：每个档位要有 name / threshold / key，"
+                f"key 可以是 null（表示这一档不按键）。")
+            return
+
+        # 配置摘要（一行，方便"到底配了什么"一眼可查）
+        hp_keys = ", ".join(f"{t.name}<{t.threshold:.0f}%→{t.key or '不喝'}"
+                            for t in self.potion_drinker.hp.tiers) or "无"
+        mp_keys = ", ".join(f"{t.name}<{t.threshold:.0f}%→{t.key or '不喝'}"
+                            for t in self.potion_drinker.mp.tiers) or "无"
+        logger.info(
+            f"[血蓝监控] 已启用自动喝药。\n"
+            f"        血量：{hp_keys}（冷却 {self.potion_drinker.hp.cooldown_sec}s）\n"
+            f"        魔法：{mp_keys}（冷却 {self.potion_drinker.mp.cooldown_sec}s）\n"
+            f"        连续 {self.potion_drinker.hp.confirm_frames} 帧低于阈值才按键；"
+            f"按键前会确认游戏窗口在最前面。")
+
+    def _step_bars_and_potions(self, img_frame):
+        '''每帧：识别血蓝 → 平滑 → 决定要不要喝 → 真按键（2026-09-27 加）。
+
+        ⚠️ 全段 try/except 兜底：它跑在主循环里，抛异常 = 整个挂机停摆。
+           "少喝一瓶"远比"脚本死掉"轻 —— 所以任何异常都只记日志、不往外抛。
+        '''
+        if self.bars_detector is None:
+            return
+
+        try:
+            hp_res, mp_res = self.bars_detector.detect(img_frame)
+            self.hp_percent, self.mp_percent = self.bars_smoother.update(hp_res, mp_res)
+
+            if self.potion_drinker is None:
+                return
+
+            # 界面上的总开关（用户随时可关）——同步进决策器
+            self.potion_drinker.enabled = self.potion_enabled
+
+            decision = self.potion_drinker.evaluate(self.hp_percent, self.mp_percent)
+            if decision.should_drink:
+                # ⚠️ 按键走 press_potion：它内部有**前台守卫 + return**，
+                #    不在游戏窗口前台时一个键都不发（见 potions.py 的说明）。
+                #    kb=None → 用模块级的 press_key（与引擎其他按键同一条路）。
+                if press_potion(decision.key, kb=self.kb):
+                    self.n_potion_drunk += 1
+
+            # 读数日志（每 5 秒一行）：没有它，"血蓝监控到底有没有在工作"
+            # 在日志里完全看不出来 —— 与 [运行状态] 同一个教训。
+            if time.time() - self.t_last_bars_log >= 5:
+                self.t_last_bars_log = time.time()
+                hp_s = f"{self.hp_percent:.1f}%" if self.hp_percent is not None else "未知"
+                mp_s = f"{self.mp_percent:.1f}%" if self.mp_percent is not None else "未知"
+                logger.info(
+                    f"[血蓝] 血{hp_s} 蓝{mp_s}"
+                    f" 已喝{self.n_potion_drunk}次"
+                    f"{'' if self.potion_enabled else '（喝药已关）'}"
+                    f" | {self.potion_drinker.last_decision.reason}")
+        except Exception as e:                                       # noqa: BLE001
+            # 出错就把功能关掉，别每帧刷屏 —— 但要在日志里留下"为什么没了"
+            self.bars_detector = None
+            logger.error(
+                f"[血蓝监控] 识别过程出错，已停用自动喝药（挂机不受影响）：{e}",
+                exc_info=True)
+
+    def set_potion_enabled(self, enabled):
+        '''界面/热键切换喝药总开关（2026-09-27 加）。
+
+        为什么需要：用户可能想临时手动喝（比如打 BOSS 要自己控药），
+        或者发现读数不对想先关掉 —— 不必为此停掉整个挂机。
+        '''
+        self.potion_enabled = bool(enabled)
+        if self.potion_drinker is not None:
+            self.potion_drinker.enabled = self.potion_enabled
+        logger.info(f"[血蓝监控] 自动喝药已{'开启' if self.potion_enabled else '关闭'}。")
+
     def _route_pixels(self, img):
         '''收集路线图上的色码像素坐标（validate_route_image / 闭环检查共用）。
+
 
         ⚠️ 第二版只有**两张**色码表（color_code / color_code_up_down）：
            第一版的「落点锚」第三张表已删除，这里不再需要 include_anchor 形参。
@@ -753,6 +926,9 @@ class MapleStoryAutoBot:
 
         # Print mode on log
         logger.info(f"[load_config] Config AutoBot as {cfg['bot']['mode']} mode")
+
+        # ── 血蓝监控 + 自动喝药：装配（2026-09-27 加）─────────────────────
+        self._setup_bars_and_potions(cfg)
 
         # Update cfg
         self.cfg = cfg
@@ -3910,6 +4086,18 @@ class MapleStoryAutoBot:
         ### State Behavior ###
         ######################
         self.fsm.do_state_stuff()
+
+        # ── 血蓝监控 + 自动喝药（2026-09-27 加）──────────────────────────
+        # 放在 do_state_stuff **之后**的原因：
+        #   ① 位置紧跟各状态算完指令，与 [运行状态] 日志同一段；
+        #   ② 喝药按键与移动/攻击键是**独立**的（药水键不参与方向指令），
+        #      放前面还是后面都不影响本帧指令，但放后面能让日志顺序更好读。
+        # 用 self.img_frame（本帧的游戏画面）识别，不用 img_frame_debug ——
+        # debug 图会被画上圈圈叉叉，颜色会污染 HSV 判据。
+        if self.img_frame is not None:
+            _perf_t0 = time.perf_counter()
+            self._step_bars_and_potions(self.img_frame)
+            self._perf("血蓝喝药", _perf_t0)
 
         self.is_first_frame = False
 

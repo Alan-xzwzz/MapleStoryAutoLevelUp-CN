@@ -109,6 +109,7 @@ Windows 有两套发按键的路子：
 | 地图定位 | 全屏截图方案 | 小地图方案，旧实现已整批删除 |
 | 反作弊 | — | 客户端带**反挂机（AntiMacro）验证**与三层反作弊 |
 | **按键模拟** | **KMbox 硬件外设**（需额外购买） | **Interception 软件驱动**（开源免费，[说明见上](#driver)） |
+| **自动喝药** | 宠物技能 / 手动 | **血蓝监控自动喝药**（识屏读血条，环境锁定 1366x768 窗口化） |
 
 ## 环境要求
 
@@ -131,6 +132,22 @@ pip install -r requirements.txt
 >
 > 缺驱动的症状是「程序能开、能点开始，但角色一动不动」——见 `src/input/InterceptionController.py` 的 `driver_status()`。
 > 抓帧唯一的限制是**游戏必须窗口模式**（系统接口抓不到独占全屏），与驱动无关。
+
+### 自动喝药的环境要求（2026-09-27 新增功能）
+
+**一句话**：游戏要**窗口化 + 1366x768 + Windows 缩放 100%**，三条都满足才能用自动喝药。
+
+**为什么这么严**：自动喝药靠"看画面上的血条"来判断。血条的位置是一个像素一个像素量出来的，窗口大小或缩放一变，量的位置就不对了，读出来的血量就是错的。与其让它读错，不如把环境卡死在一套量准了的配置上。
+
+| 要求 | 怎么设 |
+|---|---|
+| 游戏分辨率 | 游戏内设成 **1366x768**，并且**窗口化**运行（全屏、最大化都不行） |
+| Windows 缩放 | 「设置 → 系统 → 显示 → 缩放」设成 **100%** |
+| 双屏用户 | 如果两个屏幕的缩放不一样，把游戏窗口拖到**主屏幕**上 |
+
+环境的这三条不同时满足时，工具**会拦住并告诉你该怎么改**（不会悄悄读错）。不满足时挂机打怪照常，只是不自动喝药。
+
+> 如果工具提示"游戏画面大小不对"，把上面三条逐条对一遍即可 —— 尤其注意**缩放 100%** 这一条，多屏用户的画面尺寸对不上多半是它造成的。
 
 ## 快速开始（源码运行）
 
@@ -255,11 +272,19 @@ python -m tools.verify_load_config        # 配置加载链路（异常不静默
 python -m tools.verify_navigation         # 导航与路线
 python -m tools.verify_home_route         # 回正线
 python -m tools.verify_recorder_action    # 录制器动作读取
+python -m tools.verify_bars_potions       # 血蓝监控 + 自动喝药（含"不在前台不发键"回归）
 ```
+
+> CI 里登记的那批在 `.github/workflows/ci.yml`，改动 `src/` 后请一并跑一遍。
 
 ## 许可与致谢
 
 - 本项目基于 [kenyu910645/MapleStoryAutoLevelUp](https://github.com/kenyu910645/MapleStoryAutoLevelUp)（MIT License，Copyright (c) 2025 Ken Yu）修改而来，遵循同一 MIT 协议。
+- **血蓝监控 + 自动喝药**的三个核心模块（`src/utils/bars.py`、`src/utils/bar_smoothing.py`、`src/utils/potions.py`）
+  移植自 [Alan-xzwzz](https://github.com/Alan-xzwzz) 的 [PR #3](https://github.com/Aynamuk/MapleStoryAutoLevelUp-CN/pull/3)（MIT License）。
+  本 fork 按国服的固定运行环境做了改造（只支持 1366x768 窗口化、出厂预置 roi、
+  补 `span` 支持、给按键补前台守卫），改造点见各文件头的说明。
+  感谢原作者的思路，尤其是**血条闪烁的处理**（低血量时血条会闪，直接读 0 会被误判成"快死了"而疯狂喝药）。
 - 原项目的 Discord 群与赞助链接属于上游作者，本 fork 不继承。
 - 上游 README 中的台服数据与说明已不适用于国服，请以本文件为准。
 
