@@ -71,6 +71,24 @@ def deps_changed(from_tag, to_tag, cwd):
     return [f for f in files if f in keys]
 
 
+def _all_release_tags(cwd):
+    """列出仓库里全部 v* 版本标签（按版本号排序，旧的在前）。"""
+    out = _git("tag", "--list", "v*", cwd=cwd)
+    tags = [t.strip() for t in out.splitlines() if t.strip()]
+
+    def key(t):
+        parts = t.lstrip("v").split(".")
+        nums = []
+        for p in parts:
+            try:
+                nums.append(int(p))
+            except ValueError:
+                nums.append(0)
+        return nums
+
+    return sorted(tags, key=key)
+
+
 def sha256_of(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -79,19 +97,56 @@ def sha256_of(path):
     return h.hexdigest()
 
 
-def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd):
-    # ---- 门槛 1：依赖不许变 ----
-    bad = deps_changed(from_tag, to_tag, cwd)
-    if bad:
-        raise SystemExit(
-            f"[拒绝] {from_tag} → {to_tag} 之间依赖文件有变化：{bad}\n"
-            f"       依赖变了就不能发增量补丁（用户 _internal/ 里的库对不上），"
-            f"请走完整包。")
+def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd, universal=False):
+    """生成补丁。
 
-    files = changed_files(from_tag, to_tag, cwd)
-    print(f"[补丁] {from_tag} → {to_tag} 共 {len(files)} 个文件有变化：")
-    for f in files:
-        print(f"        {f}")
+    universal=True 时（用户 2026-09-27 提出「1.0.1 / 1.0.0 的用户装不了」）：
+      不再按 from_tag..to_tag 求差集，而是把**所有比 to_tag 旧的版本**都算一遍，
+      并入它们的差集 —— 得到一份「从任意旧版本都能升级」的通用补丁。
+
+      为什么这样是对的：业务代码（603 个模块）**全部内嵌在 exe 里**，
+      而补丁每次都整包替换 exe ⇒ 不论用户从 v1.0 / v1.0.1 / v1.0.2 出发，
+      装完都是同一个新 exe、同一份新配置。所以**一份补丁就够**，
+      不必为每个起始版本各发一份（那会徒增用户困惑）。
+
+      前提：所有起始版本到 to_tag 之间**依赖都没变**（否则 _internal/ 对不上）。
+      脚本会逐个检查，任何一个不满足就拒绝生成。
+    """
+    if universal:
+        all_tags = _all_release_tags(cwd)
+        older = [t for t in all_tags if t != to_tag]
+        print(f"[通用补丁] 将对以下旧版本各求一次差集：{older}")
+        if not older:
+            raise SystemExit("[错误] 找不到任何旧版本标签，无法生成通用补丁。")
+        # 依赖必须对所有旧版本都没变
+        for t in older:
+            bad = deps_changed(t, to_tag, cwd)
+            if bad:
+                raise SystemExit(
+                    f"[拒绝] {t} → {to_tag} 之间依赖有变化：{bad}\n"
+                    f"       通用补丁要求所有旧版本都能安全升级，请走完整包。")
+        files = []
+        seen = set()
+        for t in older:
+            for f in changed_files(t, to_tag, cwd):
+                if f not in seen:
+                    seen.add(f)
+                    files.append(f)
+        print(f"[通用补丁] 合并后共 {len(files)} 个文件有变化")
+
+    # ---- 门槛 1：依赖不许变 ----
+    # 通用模式已在上面逐个版本查过；单版本模式在这里查当前这一对。
+    if not universal:
+        bad = deps_changed(from_tag, to_tag, cwd)
+        if bad:
+            raise SystemExit(
+                f"[拒绝] {from_tag} → {to_tag} 之间依赖文件有变化：{bad}\n"
+                f"       依赖变了就不能发增量补丁（用户 _internal/ 里的库对不上），"
+                f"请走完整包。")
+        files = changed_files(from_tag, to_tag, cwd)
+        print(f"[补丁] {from_tag} → {to_tag} 共 {len(files)} 个文件有变化：")
+        for f in files:
+            print(f"        {f}")
 
     # ---- 门槛 2：打包产物目录必须存在且是新的 ----
     if not os.path.isdir(dist_dir):
@@ -131,7 +186,22 @@ def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd):
     total = 0
     manifest = {"from": from_tag, "to": to_tag, "files": [],
                 "always_replace": ALWAYS_REPLACE,
+                "universal": bool(universal),
                 "note": "解压后双击『应用补丁.bat』；它会先备份被覆盖的文件。"}
+    if universal:
+        manifest["applies_to"] = [t for t in _all_release_tags(cwd) if t != to_tag]
+        manifest["note"] = ("解压到任意位置后双击『应用补丁.bat』；"
+                            "适用于上面 applies_to 列出的所有旧版本。")
+
+    # ⚠️★ 关键设计（2026-09-27 实测发现并修正）：
+    #   补丁内的文件**必须放在子目录 `_补丁文件/` 下**，绝不能与用户程序同级！
+    #   原因：补丁里有「冒险岛自动练级.exe」，若解压到程序目录，**解压动作本身
+    #   就把用户的 exe 覆盖了** —— 于是：
+    #     ① 备份功能形同虚设（bat 备份到的是刚被覆盖的新文件，不是原文件）；
+    #     ② 解压中途失败/中断会留下半新半旧的损坏安装，且无法回退。
+    #   实测复现：解压后 exe 的 sha256 立刻变成新版，用户还没双击 bat。
+    #   ⇒ 放进子目录，让「覆盖」这件事**只由 bat 在备份之后执行**。
+    PAYLOAD = "_补丁文件"
 
     with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         for rel, src in entries:
@@ -139,7 +209,8 @@ def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd):
                 if rel.startswith(never):
                     break
             else:
-                zf.write(src, rel)
+                arcname = f"{PAYLOAD}/{rel}"
+                zf.write(src, arcname)
                 size = os.path.getsize(src)
                 total += size
                 manifest["files"].append({
@@ -154,7 +225,9 @@ def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd):
         zf.writestr(zi, blob)
 
         # 应用脚本
-        bat = build_apply_bat(from_tag, to_tag, manifest["files"])
+        bat = build_apply_bat(from_tag, to_tag, manifest["files"],
+                              applies_to=manifest.get("applies_to"),
+                              payload_dir=PAYLOAD)
         zi = zipfile.ZipInfo("应用补丁.bat")
         zi.external_attr = (0o644 & 0xFFFF) << 16
         zi.flag_bits |= UTF8_FLAG
@@ -177,13 +250,16 @@ def make_patch(from_tag, to_tag, dist_dir, out_zip, cwd):
     return 0
 
 
-def build_apply_bat(from_tag, to_tag, files):
+def build_apply_bat(from_tag, to_tag, files, applies_to=None, payload_dir="_补丁文件"):
     """生成给老用户双击的覆盖脚本。
 
     必须做对的三件事：
       ① 先备份被覆盖的文件（用户升级失败还能退回）；
-      ② 校验 patch.json 里每个文件的 sha256（下载不完整时当场发现，别装一半）；
+      ② 从**子目录 payload_dir** 取新文件，而不是与本脚本同级 ——
+         同级会导致"解压即覆盖"，备份失去意义（见 make_patch 里的详细说明）；
       ③ 提示用户「先关掉程序」—— 程序在跑时 exe 被占用，复制会失败。
+
+    applies_to 非空时是「通用补丁」，脚本会列出它适用的所有旧版本。
     """
     lines = [
         "@echo off",
@@ -192,11 +268,19 @@ def build_apply_bat(from_tag, to_tag, files):
         "cd /d \"%~dp0\"",
         "",
         "echo ============================================================",
-        f"echo  冒险岛自动练级  增量补丁  {from_tag}  -^>  {to_tag}",
+        f"echo  冒险岛自动练级  增量补丁  -^>  {to_tag}",
         "echo ============================================================",
         "echo.",
         "echo 这个补丁只替换变化的文件，不用重下完整包。",
         "echo.",
+    ]
+    if applies_to:
+        lines += [
+            "echo 适用于这些旧版本（装完都变成最新版）：",
+            "echo   " + "、".join(applies_to),
+            "echo.",
+        ]
+    lines += [
         "echo [!] 安装前请先【关闭 冒险岛自动练级 程序】，否则文件被占用会失败。",
         "echo.",
         "pause",
@@ -216,6 +300,14 @@ def build_apply_bat(from_tag, to_tag, files):
         "  exit /b 1",
         ")",
         "",
+        "rem 新文件放在子目录里，先确认它在（不在就是没解压完整）",
+        f"if not exist \"%~dp0{payload_dir}\" (",
+        f"  echo [错误] 找不到 {payload_dir} 文件夹 —— 补丁没有解压完整。",
+        "  echo 请重新解压本补丁（解压时要保留文件夹结构）。",
+        "  pause",
+        "  exit /b 1",
+        ")",
+        "",
         "rem ---- 备份 ----",
         "set BAK=%TARGET%\\_backup_补丁前",
         "if not exist \"%BAK%\" mkdir \"%BAK%\"",
@@ -231,7 +323,14 @@ def build_apply_bat(from_tag, to_tag, files):
     ]
     for f in files:
         p = f["path"].replace("/", "\\")
-        lines.append(f'copy /Y "{p}" "%TARGET%\\{p}" >nul')
+        # ⚠️ 目标子目录可能不存在 —— 旧版打包产物里出厂包**只有 exe 和
+        #    _internal/**（config/ 等目录是程序首次运行时才自建的）。
+        #    实测（2026-09-27）：从一个没有 config/ 的旧目录打补丁时，
+        #    直接 copy 会因为"目录名无效"失败。所以先确保父目录存在。
+        parent = os.path.dirname(p)
+        if parent:
+            lines.append(f'if not exist "%TARGET%\\{parent}" mkdir "%TARGET%\\{parent}"')
+        lines.append(f'copy /Y "%~dp0{payload_dir}\\{p}" "%TARGET%\\{p}" >nul')
     lines += [
         "",
         "echo.",
@@ -253,14 +352,26 @@ def build_apply_bat(from_tag, to_tag, files):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="生成增量补丁包（老用户覆盖升级用）")
-    ap.add_argument("--from", dest="from_tag", required=True, help="起始版本标签，如 v1.0.2")
+    ap.add_argument("--from", dest="from_tag", default=None,
+                    help="起始版本标签，如 v1.0.2。用 --universal 时可不填。")
     ap.add_argument("--to", dest="to_tag", required=True, help="目标版本标签，如 v1.0.3")
     ap.add_argument("--dist", dest="dist_dir", default="dist/冒险岛自动练级",
                     help="新版打包产物目录（默认 dist/冒险岛自动练级）")
     ap.add_argument("--out", dest="out_zip", default=None, help="输出 zip 名")
     ap.add_argument("--repo", dest="cwd", default=".", help="仓库根目录")
+    ap.add_argument("--universal", action="store_true",
+                    help="生成通用补丁：一份适用于**所有**比 --to 旧的版本"
+                         "（业务代码全内嵌在 exe 里，整包替换 exe 即可，"
+                         "不必按起始版本各发一份）。默认关闭。")
     args = ap.parse_args(argv)
 
+    if args.universal:
+        out = args.out_zip or f"patch-to-{args.to_tag}-universal.zip"
+        return make_patch(args.from_tag or "v0.0", args.to_tag,
+                          args.dist_dir, out, args.cwd, universal=True)
+
+    if not args.from_tag:
+        raise SystemExit("[错误] 不指定 --universal 时必须给 --from（起始版本标签）。")
     out = args.out_zip or f"patch-{args.from_tag}-to-{args.to_tag}.zip"
     return make_patch(args.from_tag, args.to_tag, args.dist_dir, out, args.cwd)
 
