@@ -121,7 +121,11 @@ def grab_game_frame(window_title_token, timeout=8.0):
 
     holder = {}
 
-    cap = WindowsCapture(window_hwnd=hwnd, cursor_capture=False, draw_border=False)
+    # ⚠️ draw_border 不能写死 False：该系统级开关在低于 build 20348 的机器上
+    #    会让库**直接抛异常**（issue #4），必须按版本给值。见 GameWindowCapturor 顶部说明。
+    from src.input.GameWindowCapturor import _supports_draw_border
+    cap = WindowsCapture(window_hwnd=hwnd, cursor_capture=False,
+                         draw_border=False if _supports_draw_border() else None)
 
     @cap.event
     def on_frame_arrived(frame, capture_control):

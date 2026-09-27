@@ -116,7 +116,19 @@ def main():
     cap_src = open(os.path.join(os.path.dirname(__file__), "..", "src", "input",
                                 "GameWindowCapturor.py"), encoding="utf-8").read()
     check("cursor_capture=False（光标会污染识别）", "cursor_capture=False" in cap_src)
-    check("draw_border=False（Win11 黄框会进画面）", "draw_border=False" in cap_src)
+    # ⚠️ 2026-09-27（issue #4）改判据：这里原先断言的是**无条件** `draw_border=False`，
+    #    那条断言本身就是病根 —— 该开关在 build < 20348 的机器上会让库直接抛异常，
+    #    用户「一开录制就崩」正是它导致的。现在要求的是**按版本条件化**。
+    check("draw_border 按系统版本条件化（老系统上无条件传会崩，见 issue #4）",
+          "draw_border=False if _border_off else None" in cap_src)
+    check("有版本探测函数且门槛为 build 20348（IsBorderRequired 的最低要求）",
+          "_DRAW_BORDER_MIN_BUILD = 20348" in cap_src
+          and "RtlGetVersion" in cap_src)
+    check("异常兜底：仍不支持时可退回默认设置重试",
+          "_is_border_unsupported" in cap_src and "退回默认设置重试" in cap_src)
+    check("border 分支排在泛化 platform 分支之前（否则提示错成「系统太老」）",
+          cap_src.index("_is_border_unsupported(e)")
+          < cap_src.index('"not supported on this platform" in low'))
     # 用正则取实际调用，别靠"缩进多少个空格"来匹配（那样改一下排版就误报）
     import re as _re
     _calls = _re.findall(r"WindowsCapture\((.*?)\)", cap_src, _re.S)

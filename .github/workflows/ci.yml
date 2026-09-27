@@ -72,6 +72,7 @@ jobs:
             'verify_home_none_no_crash',
             'verify_log_no_flood',
             'verify_bars_potions',
+            'verify_capture_border_fallback',
             'verify_ci_green_check'
           )
           # ⚠️ 注意：tools/verify_nametag_fallback_limit.py **不进 CI** ——
