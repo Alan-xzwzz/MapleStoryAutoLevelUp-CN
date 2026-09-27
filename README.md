@@ -122,6 +122,16 @@ pip install -r requirements.txt
 
 其中 `interception-python` 用于内核级按键模拟，需要管理员权限运行；`windows-capture` 用于抓帧。
 
+> ⚠️ **两个依赖的门槛不一样，别混为一谈**（2026-09-27 实测确认）：
+>
+> | 用途 | 依赖 | 额外要装系统组件吗 |
+> |---|---|---|
+> | **发按键** | `interception-python` | **要** —— 它是内核驱动的 Python 封装，光 pip 装包不够，还得单独下载安装 [Interception 驱动](https://github.com/oblitum/Interception/releases/latest) 并重启电脑 |
+> | **看画面** | `windows-capture` + `opencv-python` | **不要** —— `windows-capture` 调的是 Windows **自带的** Graphics Capture API，`opencv` 是纯算法库（只处理内存里的图片数组） |
+>
+> 缺驱动的症状是「程序能开、能点开始，但角色一动不动」——见 `src/input/InterceptionController.py` 的 `driver_status()`。
+> 抓帧唯一的限制是**游戏必须窗口模式**（系统接口抓不到独占全屏），与驱动无关。
+
 ## 快速开始（源码运行）
 
 > 用免安装包的**跳过这一节** —— 你要做的是 [用户版说明](README_用户版.md) 里的四步。

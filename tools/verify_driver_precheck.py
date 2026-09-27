@@ -119,6 +119,27 @@ def main():
     check("界面有 ret == -2 分支", "ret == -2" in ui_src)
     check("该分支弹窗展示安装指引", "how_to_install_driver" in ui_src)
 
+    # 【6】★ 视觉链路**不需要**驱动 —— 别让用户白折腾
+    #      （2026-09-27 实测：windows-capture 走 Windows 自带的 Graphics Capture
+    #       API，opencv 是纯算法库；本机无任何额外抓屏驱动也能成功抓到帧。）
+    #      这里做静态核对：抓帧用的是 windows_capture，**没有**任何需要装驱动的
+    #      抓屏库（如拦截驱动 / 虚拟显示器之类）。
+    print("\n【6】视觉链路不引入需装驱动的依赖")
+    cap_src = open(
+        os.path.join(os.path.dirname(__file__), "..", "src", "input",
+                     "GameWindowCapturor.py"), encoding="utf-8").read()
+    check("抓帧用 windows_capture（Windows 自带 Graphics Capture API）",
+          "windows_capture" in cap_src)
+    # 这些库会引入额外系统组件/驱动，一旦有人换过去，用户就得多装东西
+    risky = [lib for lib in ("dxcam", "mss", "pyautogui", "OBS", "virtual_display")
+             if lib in cap_src]
+    check("没有换成需要额外系统组件的抓屏方案", risky == [], f"发现：{risky}")
+
+    # opencv 只做算法，不该出现在抓屏模块里当"驱动"用
+    check("opencv 没有被当成抓屏手段（它只管算法）",
+          "cv2" not in cap_src or "VideoCapture" not in cap_src,
+          "抓屏模块里出现 cv2.VideoCapture 说明路子变了")
+
     print()
     if FAIL:
         print(f"失败 {len(FAIL)} 项：{FAIL}")
